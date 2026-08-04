@@ -1,0 +1,1 @@
+"""Git Telemetry MCP Server"""

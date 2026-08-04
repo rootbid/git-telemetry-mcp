@@ -1,0 +1,14 @@
+[project]
+name = "git-telemetry-mcp"
+version = "0.1.0"
+description = "MCP server exposing git reflog, working directory, and bash history as temporal context tools"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "starlette>=0.46",
+    "uvicorn[standard]>=0.34",
+    "sse-starlette>=2.2",
+]
+
+[project.scripts]
+git-telemetry-mcp = "git_telemetry_mcp.server:main"
