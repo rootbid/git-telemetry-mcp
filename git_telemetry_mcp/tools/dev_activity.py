@@ -92,13 +92,21 @@ async def dev_activity(arguments: dict) -> str:
 
     # Read shell history
     shell_commands: list[dict] = []
+    history_precision_warning = None
     try:
         history_file = Path(history_path)
         if history_file.exists():
             content = history_file.read_text(errors="replace").splitlines()
             if ".zsh_history" in history_path:
                 shell_commands = _parse_zsh_history(content, since_ts, until_ts)
-            else:
+            else:  # Assume bash history if not zsh
+                # Check for bash history timestamp precision
+                bash_has_timestamps = any(line.startswith("#") and line[1:].strip().isdigit() for line in content)
+                if not bash_has_timestamps:
+                    history_precision_warning = (
+                        "Bash history may lack precise timestamps. "
+                        "Consider setting HISTTIMEFORMAT in your .bashrc for better accuracy."
+                    )
                 shell_commands = _parse_bash_history(content, since_ts, until_ts)
     except (OSError, PermissionError):
         pass
@@ -135,4 +143,6 @@ async def dev_activity(arguments: dict) -> str:
         ),
         "history_file": history_path,
     }
+    if history_precision_warning:
+        result["history_precision_warning"] = history_precision_warning
     return json.dumps(result, indent=2)

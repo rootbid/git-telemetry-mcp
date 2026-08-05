@@ -13,3 +13,7 @@ wheels/
 .vscode
 .claude
 .opencode
+
+# Markdown
+*.md
+!README.md

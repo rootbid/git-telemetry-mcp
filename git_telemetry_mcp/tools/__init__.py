@@ -11,6 +11,8 @@ from git_telemetry_mcp.tools.stale_branches import detect_stale_branches
 from git_telemetry_mcp.tools.smart_commit import generate_smart_commit
 from git_telemetry_mcp.tools.developer_velocity import get_developer_velocity
 from git_telemetry_mcp.tools.conflict_check import conflict_prelim_check
+from git_telemetry_mcp.tools.temporal_snapshot import get_temporal_snapshot
+from git_telemetry_mcp.tools.compare_checkpoints import compare_workspace_checkpoints
 
 TOOLS_REGISTRY: dict[str, dict] = {
     "git_timeline": {
@@ -19,7 +21,8 @@ TOOLS_REGISTRY: dict[str, dict] = {
             "name": "git_timeline",
             "description": (
                 "Analyze git reflog and commit history over a time range. "
-                "Returns commits, branch switches, rebases, and resets."
+                "Returns commits, branch switches, rebases, resets, and more semantic details "
+                "like action type and inferred branch changes."
             ),
             "inputSchema": {
                 "type": "object",
@@ -36,7 +39,7 @@ TOOLS_REGISTRY: dict[str, dict] = {
         "handler": working_dir_delta,
         "definition": {
             "name": "working_dir_delta",
-            "description": "Summarize the current dirty working directory: staged, unstaged, and untracked changes with diff stats.",
+            "description": "Summarize the current dirty working directory: staged, unstaged, and untracked changes with diff stats, hunk-level diffs, and a change entropy score.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -232,5 +235,45 @@ TOOLS_REGISTRY: dict[str, dict] = {
                 },
             },
         },
+    },
+    "get_temporal_snapshot": {
+        "handler": get_temporal_snapshot,
+        "definition": {
+            "name": "get_temporal_snapshot",
+            "description": (
+                "The Time Machine entry point. Returns a unified JSON context window "
+                "containing recent commits, reflog movements, dirty file deltas, and shell commands "
+                "executed during a specified time range."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "time_range": {"type": "string", "description": "Time range for the snapshot (e.g., \"last 45m\", \"1.hour.ago\")."},
+                    "repo_path": {"type": "string", "description": "Path to git repository (default: cwd)."},
+                    "granularity": {"type": "string", "description": "Level of detail for the snapshot (e.g., \"raw\", \"hourly\"). Currently returns raw aggregation."},
+                },
+        "required": ["time_range"],
+    },
+},
+"compare_workspace_checkpoints": {
+    "handler": compare_workspace_checkpoints,
+    "definition": {
+        "name": "compare_workspace_checkpoints",
+        "description": (
+            "Compares two historical checkpoints of the workspace against each other "
+            "and the current HEAD to show what context was lost or gained."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ref1": {"type": "string", "description": "First reference point (e.g., commit SHA, branch name, \"1.day.ago\")."},
+                "ref2": {"type": "string", "description": "Second reference point (e.g., commit SHA, branch name, \"1.hour.ago\")."},
+                "repo_path": {"type": "string", "description": "Path to git repository (default: cwd)."},
+                "include_diff_content": {"type": "boolean", "description": "Include full diff content for comparison (default: false)."},
+            },
+            "required": ["ref1", "ref2"],
+        },
+    },
+},
     },
 }
