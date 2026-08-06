@@ -1,0 +1,25 @@
+name: "git-telemetry-mcp-codeql-config"
+
+# Advanced CodeQL Configuration for Git Telemetry MCP Server
+
+queries:
+  - name: Security and Quality Queries
+    uses: security-and-quality
+  - name: Extended Security Queries
+    uses: security-extended
+
+# Ignore test fixtures, build outputs, and virtual environments
+paths-ignore:
+  - 'tests/**'
+  - '.venv/**'
+  - 'dist/**'
+  - 'build/**'
+
+# Custom analysis rules
+query-filters:
+  - include:
+      kind: problem
+      tags:
+        - security
+        - correctness
+        - maintainability
