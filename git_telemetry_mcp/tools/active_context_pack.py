@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+from git_telemetry_mcp.schema import serialize_telemetry_payload
+
 
 
 async def get_active_context_pack(arguments: dict) -> str:
@@ -79,4 +81,4 @@ async def get_active_context_pack(arguments: dict) -> str:
             f"{len(upstream_out.decode().strip().splitlines())} unpushed commits"
         ),
     }
-    return json.dumps(result, indent=2)
+    return serialize_telemetry_payload(result, repo_path=repo_path)

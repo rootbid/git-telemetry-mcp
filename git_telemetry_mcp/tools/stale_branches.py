@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+from git_telemetry_mcp.schema import serialize_telemetry_payload
+
 
 
 async def detect_stale_branches(arguments: dict) -> str:
@@ -113,4 +115,4 @@ async def detect_stale_branches(arguments: dict) -> str:
             f"{len(remote_stale)} inactive remote (>{days_inactive} days)"
         ),
     }
-    return json.dumps(result, indent=2)
+    return serialize_telemetry_payload(result, repo_path=repo_path)

@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+from git_telemetry_mcp.schema import serialize_telemetry_payload
+
 
 
 async def trace_file_evolution(arguments: dict) -> str:
@@ -97,4 +99,4 @@ async def trace_file_evolution(arguments: dict) -> str:
         "blame_summary": dict(sorted(author_lines.items(), key=lambda x: -x[1])[:5]),
         "summary": f"{len(evolutions)} commits, {len(stash_hits)} stash appearances",
     }
-    return json.dumps(result, indent=2)
+    return serialize_telemetry_payload(result, repo_path=repo_path)

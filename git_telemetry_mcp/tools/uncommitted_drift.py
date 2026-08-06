@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+from git_telemetry_mcp.schema import serialize_telemetry_payload
+
 
 
 async def explain_uncommitted_drift(arguments: dict) -> str:
@@ -71,7 +73,7 @@ async def explain_uncommitted_drift(arguments: dict) -> str:
         },
         "drift_summary": _summarize_drift(files_changed, new_functions, new_imports, additions, deletions),
     }
-    return json.dumps(result, indent=2)
+    return serialize_telemetry_payload(result, repo_path=repo_path)
 
 
 def _summarize_drift(files: set, functions: list, imports: list, adds: int, dels: int) -> str:

@@ -3,6 +3,8 @@
 import asyncio
 import json
 import os
+from git_telemetry_mcp.schema import serialize_telemetry_payload
+
 from pathlib import Path
 
 
@@ -117,4 +119,4 @@ async def get_session_timeline(arguments: dict) -> str:
             f"{sum(1 for e in events if e['type'] == 'stash')} stashes)"
         ),
     }
-    return json.dumps(result, indent=2)
+    return serialize_telemetry_payload(result, repo_path=repo_path)

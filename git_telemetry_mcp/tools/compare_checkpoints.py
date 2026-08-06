@@ -1,7 +1,8 @@
 import asyncio
 import json
 import re
-from datetime import datetime, timezone
+from git_telemetry_mcp.schema import serialize_telemetry_payload
+
 
 async def _resolve_time_to_commit(repo_path: str, time_ref: str) -> str:
     """Resolves a time reference (e.g., '1.hour.ago', 'SHA', 'branch_name') to a commit SHA."""
@@ -43,7 +44,8 @@ async def compare_workspace_checkpoints(arguments: dict) -> str:
         head_sha = head_sha.decode().strip()
 
     except ValueError as e:
-        return json.dumps({"error": str(e)})
+        return serialize_telemetry_payload({"error": str(e)}, repo_path=repo_path, confidence_score=0.0)
+
 
     # Get a common ancestor for more meaningful diffs
     merge_base_cmd = ["git", "-C", repo_path, "merge-base", commit1_sha, commit2_sha]
@@ -95,4 +97,4 @@ async def compare_workspace_checkpoints(arguments: dict) -> str:
         ),
     }
 
-    return json.dumps(result, indent=2)
+    return serialize_telemetry_payload(result, repo_path=repo_path)

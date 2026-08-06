@@ -4,7 +4,7 @@ import asyncio
 import json
 import re
 from datetime import datetime, timezone, timedelta
-
+from git_telemetry_mcp.schema import serialize_telemetry_payload
 async def _git_timestamps(repo_path: str, since: str, until: str) -> tuple[float, float]:
     """Use git to resolve relative time expressions to unix timestamps."""
     # NOTE: This function is duplicated from dev_activity.py. Consider refactoring to a common utility.
@@ -166,6 +166,8 @@ async def git_timeline(arguments: dict) -> str:
         "commits": commits,
         "summary": f"{len(reflog_entries)} reflog entries, {len(commits)} commits",
     }
+    confidence = 1.0
     if reflog_warning:
         result["reflog_warning"] = reflog_warning
-    return json.dumps(result, indent=2)
+        confidence = 0.8
+    return serialize_telemetry_payload(result, repo_path=repo_path, confidence_score=confidence)

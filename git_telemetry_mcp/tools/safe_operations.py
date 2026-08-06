@@ -1,8 +1,8 @@
 """safe_git_reset / safe_git_checkout — destructive commands with confirmation."""
 
 import asyncio
-import json
 import uuid
+from git_telemetry_mcp.schema import serialize_telemetry_payload
 
 # In-memory pending confirmations
 _pending_confirmations: dict[str, dict] = {}
@@ -36,6 +36,7 @@ async def safe_git_reset(arguments: dict) -> str | dict:
     _pending_confirmations[conf_id] = {
         "command": ["git", "-C", repo_path, "reset", mode, target],
         "description": f"git reset {mode} {target}",
+        "repo_path": repo_path,
     }
 
     warning = (
@@ -75,7 +76,7 @@ async def safe_git_checkout(arguments: dict) -> str | dict:
         )
         out, err = await proc.communicate()
         result = out.decode() + err.decode()
-        return json.dumps({"executed": True, "output": result.strip()})
+        return serialize_telemetry_payload({"executed": True, "output": result.strip()}, repo_path=repo_path)
 
     # Force checkout — preview what will be lost
     status_cmd = ["git", "-C", repo_path, "status", "--porcelain"]
@@ -89,6 +90,7 @@ async def safe_git_checkout(arguments: dict) -> str | dict:
     _pending_confirmations[conf_id] = {
         "command": ["git", "-C", repo_path, "checkout", "--force", target],
         "description": f"git checkout --force {target}",
+        "repo_path": repo_path,
     }
 
     warning = (
@@ -114,7 +116,7 @@ async def safe_git_checkout(arguments: dict) -> str | dict:
 async def _execute_confirmed(confirmation_id: str) -> str:
     pending = _pending_confirmations.pop(confirmation_id, None)
     if not pending:
-        return json.dumps({"error": "Confirmation expired or invalid", "executed": False})
+        return serialize_telemetry_payload({"error": "Confirmation expired or invalid", "executed": False})
 
     proc = await asyncio.create_subprocess_exec(
         *pending["command"],
@@ -122,9 +124,9 @@ async def _execute_confirmed(confirmation_id: str) -> str:
     )
     out, err = await proc.communicate()
 
-    return json.dumps({
+    return serialize_telemetry_payload({
         "executed": True,
         "command": pending["description"],
         "output": (out.decode() + err.decode()).strip(),
         "returncode": proc.returncode,
-    })
+    }, repo_path=pending.get("repo_path"))

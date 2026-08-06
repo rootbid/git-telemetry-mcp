@@ -1,6 +1,8 @@
 import asyncio
 import json
 from datetime import datetime, timedelta, timezone
+from git_telemetry_mcp.schema import serialize_telemetry_payload
+
 
 from git_telemetry_mcp.tools.git_timeline import git_timeline
 from git_telemetry_mcp.tools.working_dir_delta import working_dir_delta
@@ -27,17 +29,18 @@ async def get_temporal_snapshot(arguments: dict) -> str:
         dev_activity_task,
     )
 
+    gt_parsed = json.loads(git_timeline_result)
+    wd_parsed = json.loads(working_dir_delta_result)
+    da_parsed = json.loads(dev_activity_result)
+
     snapshot = {
         "range": {"time_range_str": time_range_str, "since": since},
         "repo_path": repo_path,
         "granularity": granularity,
-        "git_timeline": json.loads(git_timeline_result),
-        "working_dir_delta": json.loads(working_dir_delta_result),
-        "dev_activity": json.loads(dev_activity_result),
+        "git_timeline": gt_parsed.get("data", gt_parsed),
+        "working_dir_delta": wd_parsed.get("data", wd_parsed),
+        "dev_activity": da_parsed.get("data", da_parsed),
         "summary": f"Temporal snapshot for {time_range_str} in {repo_path}",
     }
 
-    # Further processing based on granularity would go here
-    # For now, it's a raw aggregation of the data.
-
-    return json.dumps(snapshot, indent=2)
+    return serialize_telemetry_payload(snapshot, repo_path=repo_path)

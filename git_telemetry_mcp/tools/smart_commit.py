@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+from git_telemetry_mcp.schema import serialize_telemetry_payload
+
 
 
 COMMIT_TYPES = {
@@ -71,7 +73,8 @@ async def generate_smart_commit(arguments: dict) -> str:
     diff_text = diff_out.decode()
 
     if not files:
-        return json.dumps({"error": "No staged changes to commit"})
+        return serialize_telemetry_payload({"error": "No staged changes to commit"}, repo_path=repo_path, confidence_score=0.0)
+
 
     commit_type = _infer_type(files, diff_text)
     scope = _infer_scope(files)
@@ -123,4 +126,4 @@ async def generate_smart_commit(arguments: dict) -> str:
         result["committed"] = proc.returncode == 0
         result["output"] = (out.decode() + err.decode()).strip()
 
-    return json.dumps(result, indent=2)
+    return serialize_telemetry_payload(result, repo_path=repo_path)

@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+from git_telemetry_mcp.schema import serialize_telemetry_payload
+
 from datetime import datetime, timezone
 
 
@@ -19,10 +21,11 @@ async def stash_and_isolate(arguments: dict) -> str:
     dirty_files = status_out.decode().strip().splitlines()
 
     if not dirty_files:
-        return json.dumps({
+        return serialize_telemetry_payload({
             "stashed": False,
             "reason": "Working directory is clean, nothing to stash",
-        })
+        }, repo_path=repo_path)
+
 
     ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d-%H%M%S")
     stash_msg = message or f"auto-isolate/{operation}/{ts}"
@@ -38,10 +41,11 @@ async def stash_and_isolate(arguments: dict) -> str:
     out, err = await proc.communicate()
 
     if proc.returncode != 0:
-        return json.dumps({
+        return serialize_telemetry_payload({
             "stashed": False,
             "error": err.decode().strip(),
-        })
+        }, repo_path=repo_path, confidence_score=0.5)
+
 
     # Get the stash ref
     ref_cmd = ["git", "-C", repo_path, "stash", "list", "-1", "--format=%H %gd"]
@@ -50,10 +54,10 @@ async def stash_and_isolate(arguments: dict) -> str:
     )
     ref_out, _ = await ref_proc.communicate()
 
-    return json.dumps({
+    return serialize_telemetry_payload({
         "stashed": True,
         "message": stash_msg,
         "files_stashed": len(dirty_files),
         "ref": ref_out.decode().strip(),
         "restore_command": f"git stash pop",
-    })
+    }, repo_path=repo_path)

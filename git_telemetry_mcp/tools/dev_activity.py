@@ -4,6 +4,8 @@ import asyncio
 import json
 import os
 import re
+from git_telemetry_mcp.schema import serialize_telemetry_payload
+
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -143,6 +145,8 @@ async def dev_activity(arguments: dict) -> str:
         ),
         "history_file": history_path,
     }
+    confidence = 1.0
     if history_precision_warning:
         result["history_precision_warning"] = history_precision_warning
-    return json.dumps(result, indent=2)
+        confidence = 0.8
+    return serialize_telemetry_payload(result, repo_path=repo_path, confidence_score=confidence)

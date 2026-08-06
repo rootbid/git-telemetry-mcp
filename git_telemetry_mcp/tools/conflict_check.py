@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+from git_telemetry_mcp.schema import serialize_telemetry_payload
+
 
 
 async def conflict_prelim_check(arguments: dict) -> str:
@@ -26,10 +28,11 @@ async def conflict_prelim_check(arguments: dict) -> str:
     base_out, base_err = await proc.communicate()
 
     if proc.returncode != 0:
-        return json.dumps({
+        return serialize_telemetry_payload({
             "error": f"Cannot find merge base between {source_branch} and {target_branch}",
             "detail": base_err.decode().strip(),
-        })
+        }, repo_path=repo_path, confidence_score=0.0)
+
 
     merge_base = base_out.decode().strip()
 
@@ -98,4 +101,4 @@ async def conflict_prelim_check(arguments: dict) -> str:
             f"({ahead} ahead, {behind} behind, {len(changed_files)} files changed)"
         ),
     }
-    return json.dumps(result, indent=2)
+    return serialize_telemetry_payload(result, repo_path=repo_path)

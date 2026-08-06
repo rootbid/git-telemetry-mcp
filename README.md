@@ -1,21 +1,23 @@
 # Git Telemetry MCP
 
-An MCP server that behaves as a **Development Time Machine**. Exposes tools to analyze git reflogs, working directory state, branch health, and bash history to give AI assistants instant context about what you've been doing.
+An MCP server (target spec `2026-07-28`) providing a **Development Time Machine**. Analyzes git reflogs, commit history, working directory deltas, and shell history to give AI assistants temporal context about developer activity.
 
-## Getting started
+## Quick Start
 
 ```bash
-# Install
+# Install dependencies
 uv sync
 
-# Run
+# Run the MCP server (HTTP JSON-RPC on http://127.0.0.1:8787/mcp, SSE on /sse)
 uv run git-telemetry-mcp
-# Server starts on http://127.0.0.1:8787
+
+# Run tests
+uv run pytest
 ```
 
 ## MCP Client Configuration
 
-Add to your MCP client config (e.g. Claude Desktop, Cursor):
+Add to your MCP client config (e.g. Claude Desktop, Cursor, OpenCode):
 
 ```json
 {
@@ -27,39 +29,11 @@ Add to your MCP client config (e.g. Claude Desktop, Cursor):
 }
 ```
 
-For SSE transport, connect to `http://127.0.0.1:8787/sse`.
+## Key Features & Architecture
 
-## Architecture
+- **16 MCP Tools:** Context packs, reflog timelines, dirty diff summaries, shell correlation, dry-run merge checks, stale branch detection, and smart commit generation.
+- **Privacy First:** Built-in serializer gate redacts PII, private keys, authorization tokens, API keys, and database credentials before payload return.
+- **Contract Compliant:** Every tool emits a `telemetry_payload` envelope (`timezone_offset`, `repo_checksum`, `confidence_score`, `data`) validated against draft-07 `outputSchema` and annotated with `readOnlyHint`, `destructiveHint`, and `idempotentHint`.
+- **Safe Destructive Operations:** Two-round-trip `input_required` confirmation flow for `safe_git_reset` and `safe_git_checkout`.
 
-```
-git_telemetry_mcp/
-├── __init__.py
-├── server.py                 # Starlette app, JSON-RPC dispatch, SSE
-└── tools/
-    ├── __init__.py           # Tool registry (14 tools)
-    ├── git_timeline.py       # Reflog + commit analysis
-    ├── working_dir_delta.py  # Dirty tree summary
-    ├── dev_activity.py       # Shell history correlation
-    ├── session_timeline.py   # Unified session view
-    ├── uncommitted_drift.py  # Architectural drift analysis
-    ├── file_evolution.py     # Per-file diff history
-    ├── active_context_pack.py # Prompt-optimized context blob
-    ├── safe_operations.py    # safe_git_reset, safe_git_checkout
-    ├── stash_isolate.py      # Stash checkpoint before risky ops
-    ├── stale_branches.py     # Merged/inactive branch detection
-    ├── smart_commit.py       # Conventional Commits generation
-    ├── developer_velocity.py # Churn and frequency metrics
-    └── conflict_check.py     # Dry-run merge conflict detection
-```
-
-## Development
-
-```bash
-# Run in dev mode with auto-reload
-uv run uvicorn git_telemetry_mcp.server:app --reload --port 8787
-
-# Test a tool call
-curl -X POST http://127.0.0.1:8787/mcp \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_active_context_pack","arguments":{}}}'
-```
+For complete documentation, tool reference, argument schemas, sample outputs, and protocol details, see [HANDBOOK.md](HANDBOOK.md).

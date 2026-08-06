@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+from git_telemetry_mcp.schema import serialize_telemetry_payload
+
 
 
 async def get_developer_velocity(arguments: dict) -> str:
@@ -100,4 +102,4 @@ async def get_developer_velocity(arguments: dict) -> str:
             f"top file: {top_files[0][0] if top_files else 'none'}"
         ),
     }
-    return json.dumps(result, indent=2)
+    return serialize_telemetry_payload(result, repo_path=repo_path)

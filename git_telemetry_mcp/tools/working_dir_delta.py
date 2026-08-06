@@ -3,6 +3,8 @@
 import asyncio
 import json
 import re
+from git_telemetry_mcp.schema import serialize_telemetry_payload
+
 
 
 def _calculate_change_entropy(diff_text: str) -> float:
@@ -102,4 +104,4 @@ async def working_dir_delta(arguments: dict) -> str:
             "staged": staged_diff_out.decode(),
         }
 
-    return json.dumps(result, indent=2)
+    return serialize_telemetry_payload(result, repo_path=repo_path)
