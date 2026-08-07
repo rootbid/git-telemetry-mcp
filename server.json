@@ -1,6 +1,6 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.de391882/git-telemetry-mcp",
+  "name": "io.github.rootbid/git-telemetry-mcp",
   "title": "Git Telemetry MCP Server",
   "description": "MCP server exposing git reflog, working directory, and bash history as temporal context tools",
   "version": "0.1.1",
