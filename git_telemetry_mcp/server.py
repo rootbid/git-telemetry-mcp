@@ -15,7 +15,7 @@ from sse_starlette.sse import EventSourceResponse
 from git_telemetry_mcp.tools import TOOLS_REGISTRY
 
 MCP_PROTOCOL_VERSION = "2026-07-28"
-SERVER_INFO = {"name": "git-telemetry-mcp", "version": "0.1.0"}
+SERVER_INFO = {"name": "git-telemetry-mcp", "version": "0.1.1"}
 TOOLS_LIST_TTL_MS = 600_000
 
 # SSE session store (in-memory, per-process)

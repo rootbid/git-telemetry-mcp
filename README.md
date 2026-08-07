@@ -28,6 +28,8 @@ Add to your MCP client config (e.g. Claude Desktop, Cursor, OpenCode):
   }
 }
 ```
+<!-- mcp-name: io.github.de391882/git-telemetry-mcp -->
+
 
 ## Key Features & Architecture
 

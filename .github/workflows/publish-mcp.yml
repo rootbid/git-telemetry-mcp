@@ -1,0 +1,29 @@
+name: Publish to MCP Registry
+
+on:
+  push:
+    tags: ["v*"] # Triggers on version tags like v1.0.0
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # Required for OIDC authentication
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      # Install mcp-publisher
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      # Authenticate to MCP Registry
+      - name: Authenticate to MCP Registry
+        run: ./mcp-publisher login github-oidc
+
+      # Publish server to MCP Registry
+      - name: Publish server to MCP Registry
+        run: ./mcp-publisher publish
