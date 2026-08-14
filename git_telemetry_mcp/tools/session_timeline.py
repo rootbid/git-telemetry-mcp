@@ -1,17 +1,24 @@
-"""get_session_timeline — unified view of recent dev activity."""
+"""get_session_timeline — unified view of recent dev activity.
+
+Phase 1: raw events are segmented into logical work sessions
+(`sessions.segment_sessions`) so callers can ask for "Session #3" without
+timestamps via the optional ``session`` argument.
+"""
 
 import asyncio
 import json
 import os
-from git_telemetry_mcp.schema import serialize_telemetry_payload
-
 from pathlib import Path
+
+from git_telemetry_mcp.schema import serialize_telemetry_payload
+from git_telemetry_mcp.sessions import segment_sessions, select_session
 
 
 async def get_session_timeline(arguments: dict) -> str:
     since = arguments["since"]
     until = arguments.get("until", "now")
     repo_path = arguments.get("repo_path", ".")
+    requested_session = arguments.get("session")
 
     reflog_cmd = [
         "git", "-C", repo_path, "reflog",
@@ -109,14 +116,39 @@ async def get_session_timeline(arguments: dict) -> str:
 
     events.sort(key=lambda e: e.get("date", ""), reverse=True)
 
+    sessions = segment_sessions(events)
+    session_summaries = [
+        {k: v for k, v in s.items() if k != "events"} for s in sessions
+    ]
+
     result = {
         "range": {"since": since, "until": until},
         "events": events[:50],
         "recently_modified_files": [f["path"] for f in modified_files],
+        "sessions": session_summaries,
         "summary": (
             f"{len(events)} events ({sum(1 for e in events if e['type'] == 'commit')} commits, "
             f"{sum(1 for e in events if e['type'] == 'reflog')} reflog, "
-            f"{sum(1 for e in events if e['type'] == 'stash')} stashes)"
+            f"{sum(1 for e in events if e['type'] == 'stash')} stashes) "
+            f"across {len(sessions)} session(s)"
         ),
     }
-    return serialize_telemetry_payload(result, repo_path=repo_path)
+
+    confidence = 1.0
+    if requested_session is not None:
+        selected = select_session(sessions, requested_session)
+        if selected is not None:
+            result["events"] = selected["events"]
+            result["selected_session"] = {
+                k: v for k, v in selected.items() if k != "events"
+            }
+            result["summary"] = (
+                f"{selected['label']}: {selected['event_count']} events "
+                f"from {selected['start']} to {selected['end']}"
+            )
+        else:
+            result["selected_session"] = None
+            result["session_error"] = f"No session matching {requested_session!r}"
+            confidence = 0.5
+
+    return serialize_telemetry_payload(result, repo_path=repo_path, confidence_score=confidence)
