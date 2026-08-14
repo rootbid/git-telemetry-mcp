@@ -369,6 +369,40 @@ Analyzes staged diffs and infers a Conventional Commits message (`feat`, `fix`, 
 
 ---
 
+### 6. Resources & Prompts
+
+The server advertises `resources` and `prompts` capabilities during `initialize`.
+
+#### Resources
+
+`resources/list` exposes these stable resources:
+
+| URI | MIME type | Purpose |
+|-----|-----------|---------|
+| `telemetry://session/current` | `application/json` | Recent activity and current session |
+| `telemetry://history/standup` | `text/markdown` | Standup-style recent activity summary |
+| `git://delta/latest` | `text/plain` | Unified diff for the latest commit |
+
+Call `resources/read` with the URI. A repository may be selected with the optional
+`repo_path` parameter, or with a URI query such as
+`telemetry://session/current?repo_path=/workspace/project`. The path must resolve to
+an existing Git working tree. Dynamic resource data passes through the privacy
+serializer and oversized payloads are returned as bounded, explicitly truncated
+previews.
+
+#### Prompts
+
+`prompts/list` and `prompts/get` expose reusable context assembly:
+
+- `review_debug_loop` — active context plus working-tree delta.
+- `generate_commit_message_context` — staged-change context for commit wording.
+- `handover_notes` — current state plus recent activity for a handoff.
+
+Prompt arguments accept an optional `repo_path`, which is validated as a Git
+working tree before telemetry is collected.
+
+---
+
 ## 8. Testing & Verification
 
 Run the comprehensive unit and contract test suite using `uv`:
