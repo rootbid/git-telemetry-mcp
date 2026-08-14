@@ -10,7 +10,7 @@ async def _resolve_time_to_commit(repo_path: str, time_ref: str) -> str:
     proc = await asyncio.create_subprocess_exec(
         *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
-    stdout, stderr = await proc.communicate()
+    stdout, _stderr = await proc.communicate()
     if proc.returncode == 0:
         return stdout.decode().strip()
 
@@ -41,8 +41,8 @@ async def compare_workspace_checkpoints(arguments: dict) -> str:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        head_sha, _ = await head_proc.communicate()
-        head_sha = head_sha.decode().strip()
+        head_sha_out, _ = await head_proc.communicate()
+        head_sha = head_sha_out.decode().strip()
 
     except ValueError as e:
         return serialize_telemetry_payload(
@@ -54,8 +54,8 @@ async def compare_workspace_checkpoints(arguments: dict) -> str:
     merge_base_proc = await asyncio.create_subprocess_exec(
         *merge_base_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
-    merge_base_sha, _ = await merge_base_proc.communicate()
-    merge_base_sha = merge_base_sha.decode().strip()
+    merge_base_sha_out, _ = await merge_base_proc.communicate()
+    merge_base_sha = merge_base_sha_out.decode().strip()
 
     diff_flags = ["--shortstat"]  # Default to shortstat
     if include_diff_content:

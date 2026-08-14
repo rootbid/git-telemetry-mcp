@@ -70,7 +70,7 @@ def _home_history_files() -> set[Path]:
     return detected
 
 
-def _validate_history_path(raw_path: str) -> tuple[Path | None, str | None]:
+def _validate_history_path(raw_path: str | None) -> tuple[Path | None, str | None]:
     """Resolve a history path only when it is a regular file in an allowed area."""
     if not isinstance(raw_path, str) or not raw_path.strip():
         return None, "History path is invalid"
@@ -285,7 +285,7 @@ async def dev_activity(arguments: dict) -> str:
                 }
             )
 
-    result = {
+    result: dict[str, object] = {
         "range": {"since": since, "until": until},
         "shell_commands": shell_commands[-50:],  # cap to avoid huge payloads
         "git_events": git_events,

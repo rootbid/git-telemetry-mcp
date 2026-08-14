@@ -470,7 +470,7 @@ async def _handle_tools_call(params: dict) -> dict:
             if isinstance(parsed, dict):
                 response["structuredContent"] = scrub_data(parsed, include_paths=True)
         return response
-    except Exception:
+    except Exception:  # noqa: BLE001 — transport boundary must contain tool failures
         return {
             "content": [{"type": "text", "text": "Tool execution failed"}],
             "isError": True,
@@ -512,13 +512,13 @@ def _validate_rpc_body(body: Any) -> tuple[dict | None, dict | None]:
             return None, _jsonrpc_error(req_id, -32602, "Invalid tool arguments")
     return body, None
 
-
 async def _dispatch(body: dict) -> dict | None:
     is_notification = isinstance(body, dict) and "id" not in body
-    body, validation_error = _validate_rpc_body(body)
+    validated_body, validation_error = _validate_rpc_body(body)
     if validation_error:
         return None if is_notification else validation_error
-    assert body is not None
+    assert validated_body is not None
+    body = validated_body
     method = body["method"]
     params = body.get("params", {})
     req_id = body.get("id")

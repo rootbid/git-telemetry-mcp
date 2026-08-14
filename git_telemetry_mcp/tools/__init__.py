@@ -33,7 +33,7 @@ def _tool_entry(
 ) -> dict:
     async def validated_handler(arguments: dict):
         if not isinstance(arguments, dict):
-            raise ValueError("Invalid tool arguments: expected an object")
+            raise TypeError("Invalid tool arguments: expected an object")
         checked = dict(arguments)
         checked["_repo_path_provided"] = "repo_path" in arguments
         checked["repo_path"] = await validate_repo_path(checked.get("repo_path", "."))

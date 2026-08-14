@@ -32,7 +32,7 @@ def _parse_date(value) -> datetime | None:
     parsed: datetime | None = None
     for fmt in _DATE_FORMATS:
         try:
-            parsed = datetime.strptime(s, fmt)
+            parsed = datetime.strptime(s, fmt)  # noqa: DTZ007 — normalized to UTC below
             break
         except ValueError:
             continue

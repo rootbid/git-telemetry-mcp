@@ -209,7 +209,7 @@ async def validate_repo_path(repo_path: Any) -> str:
 def install_safe_subprocess() -> None:
     """Route legacy tool subprocess calls through the bounded launcher."""
     if asyncio.create_subprocess_exec is not safe_create_subprocess_exec:
-        asyncio.create_subprocess_exec = safe_create_subprocess_exec
+        asyncio.create_subprocess_exec = safe_create_subprocess_exec  # type: ignore[assignment]
 
 
 __all__ = [

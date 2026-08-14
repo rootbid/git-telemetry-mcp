@@ -120,7 +120,7 @@ async def test_smart_commit_rejects_non_boolean_execute(temp_git_repo):
 async def test_smart_commit_rejects_execute_true_without_confirmation(temp_git_repo):
     path = temp_git_repo / "staged.txt"
     path.write_text("staged\n")
-    subprocess.run(
+    subprocess.run(  # noqa: ASYNC221 — synchronous setup in async test
         ["git", "add", "staged.txt"], cwd=temp_git_repo, check=True, capture_output=True
     )
 
@@ -130,7 +130,7 @@ async def test_smart_commit_rejects_execute_true_without_confirmation(temp_git_r
     data = _payload(result)["data"]
     assert data["committed"] is False
     assert "confirmation" in data["error"].lower()
-    check = subprocess.run(
+    check = subprocess.run(  # noqa: ASYNC221 — synchronous assertion query
         ["git", "log", "-1", "--format=%s"],
         cwd=temp_git_repo,
         check=True,

@@ -179,13 +179,13 @@ async def test_tool_call_secret_scrubbing(temp_git_repo):
 
     import subprocess
 
-    subprocess.run(
+    subprocess.run(  # noqa: ASYNC221 — synchronous setup in async test
         ["git", "add", "secrets.txt"],
         cwd=temp_git_repo,
         check=True,
         capture_output=True,
     )
-    subprocess.run(
+    subprocess.run(  # noqa: ASYNC221 — synchronous setup in async test
         ["git", "commit", "-m", "add secret sk-proj-1234567890abcdef1234567890"],
         cwd=temp_git_repo,
         check=True,

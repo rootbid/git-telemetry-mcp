@@ -8,6 +8,7 @@ timestamps via the optional ``session`` argument.
 import asyncio
 import os
 from datetime import UTC, datetime
+from typing import Any
 
 from git_telemetry_mcp.schema import serialize_telemetry_payload
 from git_telemetry_mcp.sessions import segment_sessions, select_session
@@ -109,7 +110,7 @@ async def get_session_timeline(arguments: dict) -> str:
     log_out, _ = await log_proc.communicate()
     stash_out, _ = await stash_proc.communicate()
 
-    events = []
+    events: list[dict[str, Any]] = []
 
     for line in reflog_out.decode(errors="replace").splitlines()[:_MAX_TIMELINE_EVENTS]:
         if not line:
@@ -156,7 +157,7 @@ async def get_session_timeline(arguments: dict) -> str:
             )
 
     # Recently modified files (by mtime)
-    modified_files = []
+    modified_files: list[tuple[str, float]] = []
     try:
         find_cmd = [
             "find",
@@ -187,13 +188,13 @@ async def get_session_timeline(arguments: dict) -> str:
                 continue
             try:
                 mtime = os.path.getmtime(fpath)
-                modified_files.append({"path": fpath, "mtime": mtime})
+                modified_files.append((fpath, mtime))
             except OSError:
                 pass
-        modified_files.sort(key=lambda x: x["mtime"], reverse=True)
+        modified_files.sort(key=lambda item: item[1], reverse=True)
         modified_files = modified_files[:10]
-    except Exception:
-        pass
+    except (OSError, RuntimeError):
+        modified_files = []
 
     events.sort(key=lambda e: e.get("date", ""), reverse=True)
     events = events[:_MAX_TIMELINE_EVENTS]
@@ -203,10 +204,10 @@ async def get_session_timeline(arguments: dict) -> str:
         {k: v for k, v in s.items() if k != "events"} for s in sessions
     ]
 
-    result = {
+    result: dict[str, Any] = {
         "range": {"since": since, "until": until},
         "events": events[:50],
-        "recently_modified_files": [f["path"] for f in modified_files],
+        "recently_modified_files": [fpath for fpath, _mtime in modified_files],
         "sessions": session_summaries,
         "summary": (
             f"{len(events)} events ({sum(1 for e in events if e['type'] == 'commit')} commits, "

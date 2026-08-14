@@ -53,11 +53,17 @@ async def get_temporal_snapshot(arguments: dict) -> str:
     confidence = resolved["confidence"]
 
     state = await git_state(repo_path)
-    # relative expressions cannot reuse an old range indefinitely.
+    # Relative windows are intentionally keyed by expression rather than wall-clock
+    # timestamps; the bounded cache TTL limits freshness while allowing consecutive
+    # identical requests to hit even when resolution crosses a second boundary.
+    dynamic_window = resolved["resolved_from"] in {
+        "relative_duration", "colloquial", "git_native", "fallback",
+        "reflog_ordinal", "reflog_ordinal_unresolved",
+    }
     key = make_cache_key(
         repo_path,
-        _cache_window_value(since),
-        _cache_window_value(until),
+        time_range_str.strip().lower() if dynamic_window else _cache_window_value(since),
+        time_range_str.strip().lower() if dynamic_window else _cache_window_value(until),
         state,
         extra=f"{time_range_str.strip().lower()}|{granularity}",
     )

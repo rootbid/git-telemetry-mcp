@@ -16,7 +16,7 @@ def calculate_repo_checksum(repo_path: str | Path | None) -> str:
     try:
         canonical = str(Path(repo_path).resolve())
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    except Exception:
+    except (OSError, RuntimeError, TypeError):
         return ""
 
 
