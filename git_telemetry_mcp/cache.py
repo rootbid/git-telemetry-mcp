@@ -9,11 +9,14 @@ never served. Never authoritative state (PLAN.md §2).
 
 import asyncio
 import hashlib
+import os
 import time
 from collections import OrderedDict
 from pathlib import Path
 
-__all__ = ["TTLCache", "make_cache_key", "git_tip", "SNAPSHOT_CACHE"]
+from git_telemetry_mcp.process import safe_create_subprocess_exec
+
+__all__ = ["SNAPSHOT_CACHE", "TTLCache", "git_state", "git_tip", "make_cache_key"]
 
 
 class TTLCache:
@@ -58,7 +61,9 @@ class TTLCache:
         return {"hits": self.hits, "misses": self.misses, "size": len(self._store)}
 
 
-def make_cache_key(repo_path: str, since: str, until: str, tip: str, extra: str = "") -> str:
+def make_cache_key(
+    repo_path: str, since: str, until: str, tip: str, extra: str = ""
+) -> str:
     """SHA-256 over canonical repo path, resolved window, git tip, and extra."""
     try:
         canonical = str(Path(repo_path).resolve())
@@ -68,18 +73,83 @@ def make_cache_key(repo_path: str, since: str, until: str, tip: str, extra: str 
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-async def git_tip(repo_path: str) -> str:
-    """Current HEAD sha of `repo_path`, or ``"no-head"`` when unavailable."""
+async def _run_git_state_command(repo_path: str, *args: str) -> bytes:
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "git", "-C", repo_path, "rev-parse", "HEAD",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        proc = await safe_create_subprocess_exec(
+            "git",
+            "-C",
+            repo_path,
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        out, _ = await proc.communicate()
+        out, err = await proc.communicate()
     except (OSError, ValueError):
-        return "no-head"
-    tip = out.decode(errors="replace").strip()
-    return tip or "no-head"
+        return b""
+    return out + b"\0" + err + str(getattr(proc, "returncode", "")).encode()
+
+
+def _filesystem_state(repo_path: str) -> bytes:
+    """Include metadata Git output does not expose (notably index writes)."""
+    root = Path(repo_path)
+    git_dir = root / ".git"
+    if git_dir.is_file():
+        try:
+            marker = git_dir.read_text(errors="replace").strip()
+            if marker.startswith("gitdir:"):
+                git_dir = Path(marker[7:].strip())
+                if not git_dir.is_absolute():
+                    git_dir = (root / git_dir).resolve()
+        except OSError:
+            pass
+    paths = [git_dir / name for name in ("index", "HEAD", "packed-refs", "logs/HEAD")]
+    paths.extend(
+        Path(path)
+        for path in (
+            os.environ.get("HISTFILE", ""),
+            str(Path.home() / ".zsh_history"),
+            str(Path.home() / ".bash_history"),
+        )
+        if path
+    )
+    state: list[str] = []
+    for path in paths:
+        try:
+            stat = path.stat()
+            state.append(f"{path}:{stat.st_mtime_ns}:{stat.st_size}")
+        except OSError:
+            state.append(f"{path}:missing")
+    return "|".join(state).encode()
+
+
+async def git_tip(repo_path: str) -> str:
+    """Return the current HEAD SHA, or ``"no-head"`` when unavailable."""
+    output = await _run_git_state_command(repo_path, "rev-parse", "HEAD")
+    head = output.split(b"\0", 1)[0].decode(errors="replace").strip()
+    return head or "no-head"
+
+
+async def git_state(repo_path: str) -> str:
+    """Return a fingerprint covering HEAD, Git history, reflogs, and dirty state."""
+    commands = (
+        ("rev-parse", "HEAD"),
+        ("status", "--porcelain=v2", "--untracked-files=all"),
+        ("diff", "--no-ext-diff"),
+        ("diff", "--cached", "--no-ext-diff"),
+        ("reflog", "--all", "-n", "1000", "--format=%H|%gd|%gs|%ct"),
+        ("log", "--all", "-n", "1000", "--format=%H"),
+        ("show-ref",),
+    )
+    outputs = await asyncio.gather(
+        *(_run_git_state_command(repo_path, *command) for command in commands)
+    )
+    head = outputs[0].split(b"\0", 1)[0].decode(errors="replace").strip() or "no-head"
+    digest = hashlib.sha256()
+    for output in outputs:
+        digest.update(output)
+        digest.update(b"\0")
+    digest.update(_filesystem_state(repo_path))
+    return f"{head}|{digest.hexdigest()}"
 
 
 # Process-wide singleton used by temporal tools.

@@ -66,7 +66,7 @@ def serialize_telemetry_payload(
         confidence_score=confidence_score,
         timezone_offset=timezone_offset,
     )
-    scrubbed_payload = scrub_data(payload)
+    scrubbed_payload = scrub_data(payload, include_paths=True)
     return json.dumps(scrubbed_payload, indent=indent)
 
 

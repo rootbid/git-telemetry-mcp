@@ -21,16 +21,21 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
+    "jsonschema>=4.26.0",
     "starlette>=0.46",
     "uvicorn[standard]>=0.34",
     "sse-starlette>=2.2",
 ]
 
+[project.scripts]
+git-telemetry-mcp = "git_telemetry_mcp.server:main"
+
 [dependency-groups]
 dev = [
-    "jsonschema>=4.26.0",
+    "mypy>=1.15.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "ruff>=0.9.0",
 ]
 
 [tool.pytest.ini_options]

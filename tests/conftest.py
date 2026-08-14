@@ -2,6 +2,7 @@
 
 import subprocess
 from pathlib import Path
+
 import pytest
 
 
@@ -12,15 +13,34 @@ def temp_git_repo(tmp_path: Path) -> Path:
     repo.mkdir()
 
     # Git init
-    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test User"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
 
     # Initial commit
     readme = repo / "README.md"
     readme.write_text("# Test Repo\nInitial content\n")
-    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "initial commit"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "add", "README.md"], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "initial commit"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
 
     return repo
 
@@ -33,24 +53,52 @@ def repo_with_history(temp_git_repo: Path) -> Path:
     # Add commit on main
     file1 = repo / "file1.txt"
     file1.write_text("Hello world\n")
-    subprocess.run(["git", "add", "file1.txt"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "feat: add file1"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "add", "file1.txt"], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "feat: add file1"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
 
     # Create feature branch and commit
-    subprocess.run(["git", "checkout", "-b", "feature/test"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "checkout", "-b", "feature/test"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
     file2 = repo / "file2.py"
     file2.write_text("print('feature')\n")
-    subprocess.run(["git", "add", "file2.py"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "feat(python): add feature module"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "add", "file2.py"], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "feat(python): add feature module"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
 
     # Create uncommitted change and stash
     file3 = repo / "stashed.txt"
     file3.write_text("stash me\n")
-    subprocess.run(["git", "add", "stashed.txt"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "stash", "push", "-m", "wip stash"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "add", "stashed.txt"], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "stash", "push", "-m", "wip stash"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
 
     # Return to main
-    subprocess.run(["git", "checkout", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "checkout", "main"], cwd=repo, check=True, capture_output=True
+    )
 
     # Dirty working directory change
     readme = repo / "README.md"

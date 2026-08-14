@@ -1,12 +1,13 @@
 """Contract tests for tool definitions, annotations, and outputSchema validation."""
 
 import json
-import pytest
+from pathlib import Path
+
 import jsonschema
+import pytest
 
+from git_telemetry_mcp.server import _dispatch, _handle_tools_call, _handle_tools_list
 from git_telemetry_mcp.tools import TOOLS_REGISTRY
-from git_telemetry_mcp.server import _handle_tools_list, _handle_tools_call
-
 
 EXPECTED_TOOL_NAMES = {
     "git_timeline",
@@ -33,7 +34,7 @@ def test_registry_contains_all_16_tools():
 
 
 def test_tool_definitions_and_annotations():
-    for name, entry in TOOLS_REGISTRY.items():
+    for entry in TOOLS_REGISTRY.values():
         defn = entry["definition"]
         assert "name" in defn
         assert "description" in defn
@@ -63,7 +64,12 @@ async def test_tools_list_endpoint():
 
 
 @pytest.mark.asyncio
-async def test_tools_call_and_schema_validation(repo_with_history, fake_shell_history):
+async def test_tools_call_and_schema_validation(
+    repo_with_history, fake_shell_history, monkeypatch
+):
+    monkeypatch.setenv(
+        "GIT_TELEMETRY_ALLOWED_HISTORY_ROOTS", str(Path(fake_shell_history).parent)
+    )
     repo_path = str(repo_with_history)
     history_path = str(fake_shell_history)
 
@@ -71,7 +77,11 @@ async def test_tools_call_and_schema_validation(repo_with_history, fake_shell_hi
     tool_args = {
         "git_timeline": {"since": "1.day.ago", "repo_path": repo_path},
         "working_dir_delta": {"repo_path": repo_path, "include_diff": True},
-        "dev_activity": {"since": "1.day.ago", "repo_path": repo_path, "shell_history_path": history_path},
+        "dev_activity": {
+            "since": "1.day.ago",
+            "repo_path": repo_path,
+            "shell_history_path": history_path,
+        },
         "get_session_timeline": {"since": "1.day.ago", "repo_path": repo_path},
         "explain_uncommitted_drift": {"repo_path": repo_path},
         "trace_file_evolution": {"file_path": "README.md", "repo_path": repo_path},
@@ -84,7 +94,11 @@ async def test_tools_call_and_schema_validation(repo_with_history, fake_shell_hi
         "get_developer_velocity": {"since": "1.day.ago", "repo_path": repo_path},
         "conflict_prelim_check": {"target_branch": "main", "repo_path": repo_path},
         "get_temporal_snapshot": {"time_range": "1.day.ago", "repo_path": repo_path},
-        "compare_workspace_checkpoints": {"ref1": "HEAD~1", "ref2": "HEAD", "repo_path": repo_path},
+        "compare_workspace_checkpoints": {
+            "ref1": "HEAD~1",
+            "ref2": "HEAD",
+            "repo_path": repo_path,
+        },
     }
     for name in EXPECTED_TOOL_NAMES:
         args = tool_args[name]
@@ -114,6 +128,48 @@ async def test_tools_call_and_schema_validation(repo_with_history, fake_shell_hi
 
         # Validate against tool's declared outputSchema
         jsonschema.validate(instance=payload, schema=schema)
+
+
+@pytest.mark.asyncio
+async def test_tools_call_rejects_schema_invalid_arguments_before_handler(monkeypatch):
+    """Invalid arguments become JSON-RPC -32602 without invoking a handler."""
+    called = False
+
+    async def should_not_run(arguments):
+        nonlocal called
+        called = True
+        raise AssertionError("handler executed for invalid arguments")
+
+    monkeypatch.setitem(TOOLS_REGISTRY["git_timeline"], "handler", should_not_run)
+    response = await _dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "tools/call",
+            "params": {"name": "git_timeline", "arguments": {"since": 123}},
+        }
+    )
+    assert response["error"]["code"] == -32602
+    assert response["error"]["message"] == "Invalid tool arguments"
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_tools_call_handler_exceptions_do_not_leak_details(monkeypatch):
+    async def raises_secret(arguments):
+        raise RuntimeError(
+            "secret /home/alice/private-repo token=ghp_1234567890abcdefghijklmnopqrstuvwxyz"
+        )
+
+    monkeypatch.setitem(TOOLS_REGISTRY["git_timeline"], "handler", raises_secret)
+    result = await _handle_tools_call(
+        {"name": "git_timeline", "arguments": {"since": "1.hour.ago"}}
+    )
+    assert result["isError"] is True
+    assert result["content"][0]["text"] == "Tool execution failed"
+    assert "/home/alice" not in result["content"][0]["text"]
+
+
 @pytest.mark.asyncio
 async def test_tool_call_secret_scrubbing(temp_git_repo):
     repo_path = str(temp_git_repo)
@@ -122,14 +178,27 @@ async def test_tool_call_secret_scrubbing(temp_git_repo):
     secret_file.write_text("API_KEY=ghp_1234567890abcdefghijklmnopqrstuvwxyz\n")
 
     import subprocess
-    subprocess.run(["git", "add", "secrets.txt"], cwd=temp_git_repo, check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "add secret sk-proj-1234567890abcdef1234567890"], cwd=temp_git_repo, check=True, capture_output=True)
+
+    subprocess.run(
+        ["git", "add", "secrets.txt"],
+        cwd=temp_git_repo,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "add secret sk-proj-1234567890abcdef1234567890"],
+        cwd=temp_git_repo,
+        check=True,
+        capture_output=True,
+    )
 
     # Call git_timeline
-    response = await _handle_tools_call({
-        "name": "git_timeline",
-        "arguments": {"since": "1.hour.ago", "repo_path": repo_path},
-    })
+    response = await _handle_tools_call(
+        {
+            "name": "git_timeline",
+            "arguments": {"since": "1.hour.ago", "repo_path": repo_path},
+        }
+    )
     text = response["content"][0]["text"]
 
     # Secret should be scrubbed

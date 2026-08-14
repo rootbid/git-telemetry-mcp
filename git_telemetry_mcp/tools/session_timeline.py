@@ -6,12 +6,49 @@ timestamps via the optional ``session`` argument.
 """
 
 import asyncio
-import json
 import os
-from pathlib import Path
+from datetime import UTC, datetime
 
 from git_telemetry_mcp.schema import serialize_telemetry_payload
 from git_telemetry_mcp.sessions import segment_sessions, select_session
+
+_MAX_TIMELINE_EVENTS = 1000
+
+
+def _parse_event_datetime(value: str) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip())
+    except ValueError:
+        try:
+            parsed = datetime.strptime(value.strip(), "%Y-%m-%d %H:%M:%S %z")
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _normalized_event_date(value: str) -> str:
+    parsed = _parse_event_datetime(value)
+    return parsed.isoformat() if parsed is not None else value
+
+
+def _in_iso_window(value: str, since: str, until: str) -> bool:
+    event_dt = _parse_event_datetime(value)
+    if event_dt is None:
+        return False
+    bounds: list[datetime | None] = []
+    for bound in (since, until):
+        if bound == "now":
+            bounds.append(datetime.now(UTC))
+        else:
+            bounds.append(_parse_event_datetime(bound))
+    lower, upper = bounds
+    if lower is not None and event_dt < lower:
+        return False
+    return not (upper is not None and event_dt > upper)
 
 
 async def get_session_timeline(arguments: dict) -> str:
@@ -21,18 +58,39 @@ async def get_session_timeline(arguments: dict) -> str:
     requested_session = arguments.get("session")
 
     reflog_cmd = [
-        "git", "-C", repo_path, "reflog",
+        "git",
+        "-C",
+        repo_path,
+        "reflog",
+        "-n",
+        str(_MAX_TIMELINE_EVENTS),
         "--format=%H|%gd|%gs|%ci",
-        f"--since={since}", f"--until={until}",
+        f"--since={since}",
+        f"--until={until}",
     ]
     log_cmd = [
-        "git", "-C", repo_path, "log", "--all",
+        "git",
+        "-C",
+        repo_path,
+        "log",
+        "--all",
+        "-n",
+        str(_MAX_TIMELINE_EVENTS),
         "--format=%H|%an|%s|%ci",
-        f"--since={since}", f"--until={until}",
+        f"--since={since}",
+        f"--until={until}",
     ]
     stash_cmd = [
-        "git", "-C", repo_path, "stash", "list",
+        "git",
+        "-C",
+        repo_path,
+        "stash",
+        "list",
+        "-n",
+        str(_MAX_TIMELINE_EVENTS),
         "--format=%H|%s|%ci",
+        f"--since={since}",
+        f"--until={until}",
     ]
 
     reflog_proc, log_proc, stash_proc = await asyncio.gather(
@@ -53,50 +111,73 @@ async def get_session_timeline(arguments: dict) -> str:
 
     events = []
 
-    for line in reflog_out.decode().strip().splitlines():
+    for line in reflog_out.decode(errors="replace").splitlines()[:_MAX_TIMELINE_EVENTS]:
         if not line:
             continue
         parts = line.split("|", 3)
         if len(parts) == 4:
-            events.append({
-                "type": "reflog",
-                "sha": parts[0][:8],
-                "selector": parts[1],
-                "action": parts[2],
-                "date": parts[3],
-            })
+            events.append(
+                {
+                    "type": "reflog",
+                    "sha": parts[0][:8],
+                    "selector": parts[1],
+                    "action": parts[2],
+                    "date": _normalized_event_date(parts[3]),
+                }
+            )
 
-    for line in log_out.decode().strip().splitlines():
+    for line in log_out.decode(errors="replace").splitlines()[:_MAX_TIMELINE_EVENTS]:
         if not line:
             continue
         parts = line.split("|", 3)
         if len(parts) == 4:
-            events.append({
-                "type": "commit",
-                "sha": parts[0][:8],
-                "author": parts[1],
-                "message": parts[2],
-                "date": parts[3],
-            })
+            events.append(
+                {
+                    "type": "commit",
+                    "sha": parts[0][:8],
+                    "author": parts[1],
+                    "message": parts[2],
+                    "date": _normalized_event_date(parts[3]),
+                }
+            )
 
-    for line in stash_out.decode().strip().splitlines():
+    for line in stash_out.decode(errors="replace").splitlines()[:_MAX_TIMELINE_EVENTS]:
         if not line:
             continue
         parts = line.split("|", 2)
-        if len(parts) == 3:
-            events.append({
-                "type": "stash",
-                "sha": parts[0][:8],
-                "message": parts[1],
-                "date": parts[2],
-            })
+        if len(parts) == 3 and _in_iso_window(parts[2], since, until):
+            events.append(
+                {
+                    "type": "stash",
+                    "sha": parts[0][:8],
+                    "message": parts[1],
+                    "date": _normalized_event_date(parts[2]),
+                }
+            )
 
     # Recently modified files (by mtime)
     modified_files = []
     try:
-        find_cmd = ["find", repo_path, "-maxdepth", "3", "-name", "*.py",
-                    "-o", "-name", "*.ts", "-o", "-name", "*.js",
-                    "-o", "-name", "*.go", "-o", "-name", "*.rs"]
+        find_cmd = [
+            "find",
+            repo_path,
+            "-maxdepth",
+            "3",
+            "-name",
+            "*.py",
+            "-o",
+            "-name",
+            "*.ts",
+            "-o",
+            "-name",
+            "*.js",
+            "-o",
+            "-name",
+            "*.go",
+            "-o",
+            "-name",
+            "*.rs",
+        ]
         find_proc = await asyncio.create_subprocess_exec(
             *find_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
@@ -115,6 +196,7 @@ async def get_session_timeline(arguments: dict) -> str:
         pass
 
     events.sort(key=lambda e: e.get("date", ""), reverse=True)
+    events = events[:_MAX_TIMELINE_EVENTS]
 
     sessions = segment_sessions(events)
     session_summaries = [
@@ -151,4 +233,6 @@ async def get_session_timeline(arguments: dict) -> str:
             result["session_error"] = f"No session matching {requested_session!r}"
             confidence = 0.5
 
-    return serialize_telemetry_payload(result, repo_path=repo_path, confidence_score=confidence)
+    return serialize_telemetry_payload(
+        result, repo_path=repo_path, confidence_score=confidence
+    )

@@ -1,9 +1,8 @@
 """detect_stale_branches — find merged or inactive branches."""
 
 import asyncio
-import json
-from git_telemetry_mcp.schema import serialize_telemetry_payload
 
+from git_telemetry_mcp.schema import serialize_telemetry_payload
 
 
 async def detect_stale_branches(arguments: dict) -> str:
@@ -12,7 +11,15 @@ async def detect_stale_branches(arguments: dict) -> str:
     include_remote = arguments.get("include_remote", True)
 
     # Merged branches
-    merged_cmd = ["git", "-C", repo_path, "branch", "--merged", "HEAD", "--format=%(refname:short)|%(committerdate:iso)"]
+    merged_cmd = [
+        "git",
+        "-C",
+        repo_path,
+        "branch",
+        "--merged",
+        "HEAD",
+        "--format=%(refname:short)|%(committerdate:iso)",
+    ]
     merged_proc = await asyncio.create_subprocess_exec(
         *merged_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
@@ -20,7 +27,10 @@ async def detect_stale_branches(arguments: dict) -> str:
 
     # All branches with last commit date
     all_cmd = [
-        "git", "-C", repo_path, "for-each-ref",
+        "git",
+        "-C",
+        repo_path,
+        "for-each-ref",
         "--sort=-committerdate",
         "--format=%(refname:short)|%(committerdate:relative)|%(committerdate:unix)|%(upstream:track)",
         "refs/heads/",
@@ -34,7 +44,10 @@ async def detect_stale_branches(arguments: dict) -> str:
     remote_stale = []
     if include_remote:
         remote_cmd = [
-            "git", "-C", repo_path, "for-each-ref",
+            "git",
+            "-C",
+            repo_path,
+            "for-each-ref",
             "--sort=-committerdate",
             "--format=%(refname:short)|%(committerdate:relative)|%(committerdate:unix)",
             "refs/remotes/",
@@ -45,6 +58,7 @@ async def detect_stale_branches(arguments: dict) -> str:
         remote_out, _ = await remote_proc.communicate()
 
         import time
+
         cutoff = time.time() - (days_inactive * 86400)
         for line in remote_out.decode().strip().splitlines():
             if not line or "HEAD" in line:
@@ -54,10 +68,12 @@ async def detect_stale_branches(arguments: dict) -> str:
                 try:
                     ts = int(parts[2])
                     if ts < cutoff:
-                        remote_stale.append({
-                            "branch": parts[0],
-                            "last_activity": parts[1],
-                        })
+                        remote_stale.append(
+                            {
+                                "branch": parts[0],
+                                "last_activity": parts[1],
+                            }
+                        )
                 except ValueError:
                     pass
 
@@ -77,13 +93,16 @@ async def detect_stale_branches(arguments: dict) -> str:
         name = parts[0].strip()
         if name in (current_branch, "main", "master", "develop"):
             continue
-        merged_branches.append({
-            "branch": name,
-            "last_commit_date": parts[1] if len(parts) > 1 else "unknown",
-        })
+        merged_branches.append(
+            {
+                "branch": name,
+                "last_commit_date": parts[1] if len(parts) > 1 else "unknown",
+            }
+        )
 
     # Inactive local branches
     import time
+
     cutoff = time.time() - (days_inactive * 86400)
     inactive = []
     for line in all_out.decode().strip().splitlines():
@@ -97,11 +116,13 @@ async def detect_stale_branches(arguments: dict) -> str:
             try:
                 ts = int(parts[2])
                 if ts < cutoff:
-                    inactive.append({
-                        "branch": name,
-                        "last_activity": parts[1],
-                        "tracking": parts[3] if len(parts) > 3 else "",
-                    })
+                    inactive.append(
+                        {
+                            "branch": name,
+                            "last_activity": parts[1],
+                            "tracking": parts[3] if len(parts) > 3 else "",
+                        }
+                    )
             except ValueError:
                 pass
 

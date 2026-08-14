@@ -1,7 +1,6 @@
 """Focused MCP resources and prompts surface tests."""
 
 import json
-
 from urllib.parse import quote
 
 import pytest
@@ -75,9 +74,9 @@ async def test_each_resource_read_has_serialized_mcp_content(uri, temp_git_repo)
     content = result["contents"][0]
     assert content["uri"] == uri
     payload = json.loads(content["text"])
-    assert {"timezone_offset", "repo_checksum", "confidence_score", "data"} <= set(payload)
-
-
+    assert {"timezone_offset", "repo_checksum", "confidence_score", "data"} <= set(
+        payload
+    )
 
 
 @pytest.mark.asyncio
@@ -123,6 +122,7 @@ async def test_dispatch_routes_resources_and_prompts():
     )
     assert resource_response["result"]["resources"]
     assert prompt_response["result"]["prompts"]
+
 
 @pytest.mark.asyncio
 async def test_resources_read_rejects_non_git_worktree(tmp_path):
@@ -188,3 +188,30 @@ async def test_oversized_resource_is_bounded_with_truncated_preview(
     assert payload["data"]["truncated"] is True
     assert isinstance(payload["data"]["preview"], str)
     assert payload["data"]["original_bytes"] > 100_000
+
+
+@pytest.mark.asyncio
+async def test_prompt_delimits_git_data_and_scrubs_paths(temp_git_repo):
+    result = await _handle_prompts_get(
+        {"name": "handover_notes", "arguments": {"repo_path": str(temp_git_repo)}}
+    )
+    text = result["messages"][0]["content"]["text"]
+    assert "<<<BEGIN UNTRUSTED GIT DATA:" in text
+    assert "<<<END UNTRUSTED GIT DATA:" in text
+    assert str(temp_git_repo) not in text
+
+
+@pytest.mark.asyncio
+async def test_input_required_has_scrubbed_structured_result(temp_git_repo):
+    from git_telemetry_mcp.server import _handle_tools_call
+
+    result = await _handle_tools_call(
+        {
+            "name": "safe_git_reset",
+            "arguments": {"repo_path": str(temp_git_repo), "mode": "--soft"},
+        }
+    )
+    assert result["resultType"] == "input_required"
+    assert result["structuredContent"]["resultType"] == "input_required"
+    assert "inputSchema" in result["structuredContent"]
+    assert str(temp_git_repo) not in json.dumps(result)

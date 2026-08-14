@@ -1,6 +1,5 @@
 import asyncio
-import json
-import re
+
 from git_telemetry_mcp.schema import serialize_telemetry_payload
 
 
@@ -20,10 +19,10 @@ async def _resolve_time_to_commit(repo_path: str, time_ref: str) -> str:
     proc = await asyncio.create_subprocess_exec(
         *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
-    stdout, stderr = await proc.communicate()
+    stdout, _stderr = await proc.communicate()
     if proc.returncode == 0 and stdout.decode().strip():
         return stdout.decode().strip()
-    
+
     raise ValueError(f"Could not resolve time reference '{time_ref}' to a commit.")
 
 
@@ -38,14 +37,17 @@ async def compare_workspace_checkpoints(arguments: dict) -> str:
         commit2_sha = await _resolve_time_to_commit(repo_path, ref2)
         head_sha_cmd = ["git", "-C", repo_path, "rev-parse", "--short", "HEAD"]
         head_proc = await asyncio.create_subprocess_exec(
-            *head_sha_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            *head_sha_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         head_sha, _ = await head_proc.communicate()
         head_sha = head_sha.decode().strip()
 
     except ValueError as e:
-        return serialize_telemetry_payload({"error": str(e)}, repo_path=repo_path, confidence_score=0.0)
-
+        return serialize_telemetry_payload(
+            {"error": str(e)}, repo_path=repo_path, confidence_score=0.0
+        )
 
     # Get a common ancestor for more meaningful diffs
     merge_base_cmd = ["git", "-C", repo_path, "merge-base", commit1_sha, commit2_sha]
@@ -55,27 +57,57 @@ async def compare_workspace_checkpoints(arguments: dict) -> str:
     merge_base_sha, _ = await merge_base_proc.communicate()
     merge_base_sha = merge_base_sha.decode().strip()
 
-    diff_flags = ["--shortstat"] # Default to shortstat
+    diff_flags = ["--shortstat"]  # Default to shortstat
     if include_diff_content:
-        diff_flags = [] # If content is requested, remove shortstat
+        diff_flags = []  # If content is requested, remove shortstat
     diff_flags.append("--no-color")
 
     # Diff: Merge Base -> Commit 1
-    diff_mb_c1_cmd = ["git", "-C", repo_path, "diff", merge_base_sha, commit1_sha, *diff_flags]
+    diff_mb_c1_cmd = [
+        "git",
+        "-C",
+        repo_path,
+        "diff",
+        merge_base_sha,
+        commit1_sha,
+        *diff_flags,
+    ]
     # Diff: Merge Base -> Commit 2
-    diff_mb_c2_cmd = ["git", "-C", repo_path, "diff", merge_base_sha, commit2_sha, *diff_flags]
+    diff_mb_c2_cmd = [
+        "git",
+        "-C",
+        repo_path,
+        "diff",
+        merge_base_sha,
+        commit2_sha,
+        *diff_flags,
+    ]
     # Diff: Commit 2 -> HEAD (to see changes since ref2)
-    diff_c2_head_cmd = ["git", "-C", repo_path, "diff", commit2_sha, head_sha, *diff_flags]
-    
+    diff_c2_head_cmd = [
+        "git",
+        "-C",
+        repo_path,
+        "diff",
+        commit2_sha,
+        head_sha,
+        *diff_flags,
+    ]
+
     procs = await asyncio.gather(
         asyncio.create_subprocess_exec(
-            *diff_mb_c1_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            *diff_mb_c1_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         ),
         asyncio.create_subprocess_exec(
-            *diff_mb_c2_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            *diff_mb_c2_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         ),
         asyncio.create_subprocess_exec(
-            *diff_c2_head_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            *diff_c2_head_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         ),
     )
 

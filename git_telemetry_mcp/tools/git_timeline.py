@@ -1,30 +1,49 @@
 """git_timeline — reflog + commit analysis over a time range."""
 
 import asyncio
-import json
 import re
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
+
 from git_telemetry_mcp.schema import serialize_telemetry_payload
-async def _git_timestamps(repo_path: str, since: str, until: str) -> tuple[float, float]:
+
+
+async def _git_timestamps(
+    repo_path: str, since: str, until: str
+) -> tuple[float, float]:
     """Use git to resolve relative time expressions to unix timestamps."""
     # NOTE: This function is duplicated from dev_activity.py. Consider refactoring to a common utility.
     proc = await asyncio.create_subprocess_exec(
-        "git", "-C", repo_path, "log", "--format=%ct",
-        f"--since={since}", f"--until={until}", "-1",
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        "git",
+        "-C",
+        repo_path,
+        "log",
+        "--format=%ct",
+        f"--since={since}",
+        f"--until={until}",
+        "-1",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
-    await proc.communicate() # We only care about the return code here, not the output
+    await proc.communicate()  # We only care about the return code here, not the output
 
     # Use 'date' command to reliably parse relative time strings to epoch timestamps
     since_proc = await asyncio.create_subprocess_exec(
-        "date", "--date", since.replace(".", " ").replace("ago", "ago"), "+%s",
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        "date",
+        "--date",
+        since.replace(".", " ").replace("ago", "ago"),
+        "+%s",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
     since_out, _ = await since_proc.communicate()
 
     until_proc = await asyncio.create_subprocess_exec(
-        "date", "--date", until.replace(".", " ") if until != "now" else "now", "+%s",
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        "date",
+        "--date",
+        until.replace(".", " ") if until != "now" else "now",
+        "+%s",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
     until_out, _ = await until_proc.communicate()
 
@@ -32,15 +51,16 @@ async def _git_timestamps(repo_path: str, since: str, until: str) -> tuple[float
         since_ts = float(since_out.decode().strip())
     except ValueError:
         # Default to 1 hour ago if 'since' parsing fails
-        since_ts = datetime.now(tz=timezone.utc).timestamp() - 3600
+        since_ts = datetime.now(tz=UTC).timestamp() - 3600
 
     try:
         until_ts = float(until_out.decode().strip())
     except ValueError:
         # Default to now if 'until' parsing fails
-        until_ts = datetime.now(tz=timezone.utc).timestamp()
+        until_ts = datetime.now(tz=UTC).timestamp()
 
     return since_ts, until_ts
+
 
 def _parse_reflog_entry(entry_line: str) -> dict:
     parts = entry_line.split("|", 3)
@@ -105,10 +125,12 @@ async def git_timeline(arguments: dict) -> str:
     until = arguments.get("until", "now")
     repo_path = arguments.get("repo_path", ".")
 
-    since_ts, until_ts = await _git_timestamps(repo_path, since, until) # Get numeric timestamps
+    since_ts, _until_ts = await _git_timestamps(
+        repo_path, since, until
+    )  # Get numeric timestamps
 
     # Calculate reflog expiration threshold (default: 30 days)
-    reflog_expiration_threshold = datetime.now(tz=timezone.utc) - timedelta(days=30)
+    reflog_expiration_threshold = datetime.now(tz=UTC) - timedelta(days=30)
     reflog_warning = None
     if since_ts < reflog_expiration_threshold.timestamp():
         reflog_warning = (
@@ -118,13 +140,23 @@ async def git_timeline(arguments: dict) -> str:
         )
 
     reflog_cmd = [
-        "git", "-C", repo_path, "reflog", "--format=%H|%gd|%gs|%ci",
-        f"--since={since}", f"--until={until}",
+        "git",
+        "-C",
+        repo_path,
+        "reflog",
+        "--format=%H|%gd|%gs|%ci",
+        f"--since={since}",
+        f"--until={until}",
     ]
     log_cmd = [
-        "git", "-C", repo_path, "log", "--all",
+        "git",
+        "-C",
+        repo_path,
+        "log",
+        "--all",
         "--format=%H|%an|%s|%ci",
-        f"--since={since}", f"--until={until}",
+        f"--since={since}",
+        f"--until={until}",
     ]
 
     reflog_proc, log_proc = await asyncio.gather(
@@ -153,12 +185,14 @@ async def git_timeline(arguments: dict) -> str:
             continue
         parts = line.split("|", 3)
         if len(parts) == 4:
-            commits.append({
-                "sha": parts[0][:8],
-                "author": parts[1],
-                "message": parts[2],
-                "date": parts[3],
-            })
+            commits.append(
+                {
+                    "sha": parts[0][:8],
+                    "author": parts[1],
+                    "message": parts[2],
+                    "date": parts[3],
+                }
+            )
 
     result = {
         "range": {"since": since, "until": until},
@@ -170,4 +204,6 @@ async def git_timeline(arguments: dict) -> str:
     if reflog_warning:
         result["reflog_warning"] = reflog_warning
         confidence = 0.8
-    return serialize_telemetry_payload(result, repo_path=repo_path, confidence_score=confidence)
+    return serialize_telemetry_payload(
+        result, repo_path=repo_path, confidence_score=confidence
+    )

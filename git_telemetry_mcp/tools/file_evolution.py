@@ -1,9 +1,8 @@
 """trace_file_evolution — line-by-line diff history for a file."""
 
 import asyncio
-import json
-from git_telemetry_mcp.schema import serialize_telemetry_payload
 
+from git_telemetry_mcp.schema import serialize_telemetry_payload
 
 
 async def trace_file_evolution(arguments: dict) -> str:
@@ -13,9 +12,15 @@ async def trace_file_evolution(arguments: dict) -> str:
 
     # Get recent commits touching this file
     log_cmd = [
-        "git", "-C", repo_path, "log",
-        f"-{max_commits}", "--format=%H|%an|%s|%ci", "--follow",
-        "--", file_path,
+        "git",
+        "-C",
+        repo_path,
+        "log",
+        f"-{max_commits}",
+        "--format=%H|%an|%s|%ci",
+        "--follow",
+        "--",
+        file_path,
     ]
     log_proc = await asyncio.create_subprocess_exec(
         *log_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -28,31 +33,42 @@ async def trace_file_evolution(arguments: dict) -> str:
             continue
         parts = line.split("|", 3)
         if len(parts) == 4:
-            commits.append({
-                "sha": parts[0],
-                "author": parts[1],
-                "message": parts[2],
-                "date": parts[3],
-            })
+            commits.append(
+                {
+                    "sha": parts[0],
+                    "author": parts[1],
+                    "message": parts[2],
+                    "date": parts[3],
+                }
+            )
 
     # Get diffs for each commit pair
     evolutions = []
     for i, commit in enumerate(commits):
         diff_cmd = [
-            "git", "-C", repo_path, "show",
-            "--format=", "--stat", "--no-color", commit["sha"],
-            "--", file_path,
+            "git",
+            "-C",
+            repo_path,
+            "show",
+            "--format=",
+            "--stat",
+            "--no-color",
+            commit["sha"],
+            "--",
+            file_path,
         ]
         diff_proc = await asyncio.create_subprocess_exec(
             *diff_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         diff_out, _ = await diff_proc.communicate()
 
-        evolutions.append({
-            **commit,
-            "sha": commit["sha"][:8],
-            "diff_stat": diff_out.decode().strip(),
-        })
+        evolutions.append(
+            {
+                **commit,
+                "sha": commit["sha"][:8],
+                "diff_stat": diff_out.decode().strip(),
+            }
+        )
 
     # Check if file exists in stashes
     stash_hits = []
@@ -68,10 +84,19 @@ async def trace_file_evolution(arguments: dict) -> str:
         parts = line.split("|", 1)
         if len(parts) == 2:
             check_cmd = [
-                "git", "-C", repo_path, "stash", "show", parts[0], "--", file_path,
+                "git",
+                "-C",
+                repo_path,
+                "stash",
+                "show",
+                parts[0],
+                "--",
+                file_path,
             ]
             check_proc = await asyncio.create_subprocess_exec(
-                *check_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                *check_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
             check_out, _ = await check_proc.communicate()
             if check_out.decode().strip():
@@ -79,7 +104,12 @@ async def trace_file_evolution(arguments: dict) -> str:
 
     # Blame summary (top contributors to current state)
     blame_cmd = [
-        "git", "-C", repo_path, "blame", "--line-porcelain", file_path,
+        "git",
+        "-C",
+        repo_path,
+        "blame",
+        "--line-porcelain",
+        file_path,
     ]
     blame_proc = await asyncio.create_subprocess_exec(
         *blame_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE

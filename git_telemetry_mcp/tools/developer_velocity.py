@@ -1,9 +1,8 @@
 """get_developer_velocity — churn, top files, commit frequency."""
 
 import asyncio
-import json
-from git_telemetry_mcp.schema import serialize_telemetry_payload
 
+from git_telemetry_mcp.schema import serialize_telemetry_payload
 
 
 async def get_developer_velocity(arguments: dict) -> str:
@@ -14,8 +13,12 @@ async def get_developer_velocity(arguments: dict) -> str:
 
     # Commit count and frequency
     log_args = [
-        "git", "-C", repo_path, "log",
-        f"--since={since}", f"--until={until}",
+        "git",
+        "-C",
+        repo_path,
+        "log",
+        f"--since={since}",
+        f"--until={until}",
         "--format=%H|%ci|%s",
     ]
     if author:
@@ -23,9 +26,14 @@ async def get_developer_velocity(arguments: dict) -> str:
 
     # Shortstat per commit for churn
     numstat_args = [
-        "git", "-C", repo_path, "log",
-        f"--since={since}", f"--until={until}",
-        "--numstat", "--format=COMMIT|%H",
+        "git",
+        "-C",
+        repo_path,
+        "log",
+        f"--since={since}",
+        f"--until={until}",
+        "--numstat",
+        "--format=COMMIT|%H",
     ]
     if author:
         numstat_args.extend(["--author", author])
@@ -35,7 +43,9 @@ async def get_developer_velocity(arguments: dict) -> str:
             *log_args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         ),
         asyncio.create_subprocess_exec(
-            *numstat_args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            *numstat_args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         ),
     )
 

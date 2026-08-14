@@ -11,31 +11,41 @@ main to feature/x"), which triggers a branch-switch boundary.
 """
 
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 
 __all__ = ["segment_sessions", "select_session"]
 
+_MAX_SESSION_EVENTS = 1000
 _DATE_FORMATS = (
     "%Y-%m-%d %H:%M:%S %z",
     "%Y-%m-%dT%H:%M:%S%z",
     "%Y-%m-%d %H:%M:%S",
 )
 _CHECKOUT_RE = re.compile(r"checkout:\s*moving from (\S+) to (\S+)")
+_SESSION_SELECTOR_RE = re.compile(r"(?:session\s+#|#)?([1-9][0-9]*)", re.IGNORECASE)
 
 
 def _parse_date(value) -> datetime | None:
     if not value or not isinstance(value, str):
         return None
     s = value.strip()
+    parsed: datetime | None = None
     for fmt in _DATE_FORMATS:
         try:
-            return datetime.strptime(s, fmt)
+            parsed = datetime.strptime(s, fmt)
+            break
         except ValueError:
             continue
-    try:
-        return datetime.fromisoformat(s)
-    except ValueError:
-        return None
+    if parsed is None:
+        try:
+            parsed = datetime.fromisoformat(s)
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    else:
+        parsed = parsed.astimezone(UTC)
+    return parsed
 
 
 def _checkout(event: dict) -> re.Match | None:
@@ -51,16 +61,16 @@ def _branches_of(event: dict) -> list[str]:
 
 
 def segment_sessions(events: list[dict], gap_seconds: int = 900) -> list[dict]:
-    """Group `events` into sessions. Returns sessions numbered #1 = most recent.
-
-    Boundary reasons: ``start`` (first event), ``branch_switch`` (reflog
-    checkout between branches), or ``inactivity_gap`` (> ``gap_seconds``).
-    """
+    """Group a bounded event stream into sessions numbered newest-first."""
     dated: list[tuple[datetime, dict]] = []
-    for event in events:
+    for event in events[:_MAX_SESSION_EVENTS]:
+        if not isinstance(event, dict):
+            continue
         dt = _parse_date(event.get("date"))
         if dt is not None:
-            dated.append((dt, event))
+            normalized_event = dict(event)
+            normalized_event["date"] = dt.isoformat()
+            dated.append((dt, normalized_event))
     dated.sort(key=lambda pair: pair[0])
 
     raw: list[dict] = []
@@ -104,34 +114,36 @@ def _finalize(raw: list[dict]) -> list[dict]:
     for offset, sess in enumerate(reversed(raw)):
         start: datetime = sess["start"]
         end: datetime = sess["end"]
-        sessions.append({
-            "session_id": offset + 1,
-            "label": f"Session #{offset + 1}",
-            "start": start.isoformat(),
-            "end": end.isoformat(),
-            "duration_seconds": int((end - start).total_seconds()),
-            "event_count": len(sess["events"]),
-            "branches": sess["branches"],
-            "boundary_reason": sess["boundary_reason"],
-            "events": sess["events"],
-        })
+        sessions.append(
+            {
+                "session_id": offset + 1,
+                "label": f"Session #{offset + 1}",
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "duration_seconds": int((end - start).total_seconds()),
+                "event_count": len(sess["events"]),
+                "branches": sess["branches"],
+                "boundary_reason": sess["boundary_reason"],
+                "events": sess["events"],
+            }
+        )
     return sessions
 
 
 def select_session(sessions: list[dict], requested) -> dict | None:
-    """Return the session matching `requested` ("3", "#3", "Session #3", 3)."""
-    if requested is None:
+    """Return a session for an exact numeric selector."""
+    if requested is None or isinstance(requested, bool):
         return None
     if isinstance(requested, str):
-        m = re.search(r"\d+", requested)
-        if not m:
+        match = _SESSION_SELECTOR_RE.fullmatch(requested.strip())
+        if match is None:
             return None
-        requested = int(m.group(0))
-    try:
-        target = int(requested)
-    except (TypeError, ValueError):
+        target = int(match.group(1))
+    elif isinstance(requested, int) and requested > 0:
+        target = requested
+    else:
         return None
     for sess in sessions:
-        if sess["session_id"] == target:
+        if sess.get("session_id") == target:
             return sess
     return None

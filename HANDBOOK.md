@@ -24,8 +24,8 @@ Welcome to the **Git Telemetry MCP Server** handbook. This server provides a **D
 
 ## 1. Protocol Target & Architecture
 
-- **Protocol Version:** MCP `2026-07-28`
-- **Transport:** Stateless HTTP JSON-RPC + Server-Sent Events (SSE)
+- **Protocol target:** MCP `2026-07-28` focused subset; see the supported-method list below. Unsupported methods return JSON-RPC `-32601` rather than being silently accepted.
+- **Transport:** Stateless HTTP JSON-RPC + Server-Sent Events (SSE). SSE state is bounded and in-memory, not a durable session store.
 - **Runtime:** Python `>= 3.13` (managed via `uv`)
 
 ```
@@ -102,8 +102,11 @@ For SSE connection, use `http://127.0.0.1:8787/sse`.
 
 ## 4. Data Privacy & Forensic Hygiene
 
-The server enforces zero-trust data privacy at the serialization gate. Before any tool payload is returned, `serialize_telemetry_payload()` passes the complete payload through the `git_telemetry_mcp/privacy.py` scrubber.
+The server applies a serializer privacy boundary before returning tool payloads. `serialize_telemetry_payload()` scrubs known secret patterns and configured filesystem path patterns from telemetry and prompt context; `repo_checksum` is a one-way correlation value. This is defense in depth, not a guarantee that arbitrary command text, commit content, or repository data is safe to disclose.
 
+Tool-call arguments are validated against each advertised `inputSchema` before a handler executes. Invalid arguments receive JSON-RPC `-32602`; handler failures return a generic error without exception details.
+
+Git-derived text included in prompts is explicitly delimited as untrusted data so commit messages, branch names, and diffs cannot be mistaken for instructions. Do not expose the local development endpoint to an untrusted network without authentication and an appropriate proxy.
 ### Scrubbed Secret Patterns
 - **Private Keys:** PEM, RSA, OpenSSH, EC, PGP blocks
 - **Authorization Headers:** `Authorization: Bearer ...`, `Authorization: Basic ...`
@@ -217,7 +220,15 @@ Correlates zsh/bash shell history with git commits and reflog entries to reconst
   | `since` | string | Yes | Start time (e.g. `"1.day.ago"`) |
   | `until` | string | No | End time (default: `"now"`) |
   | `repo_path` | string | No | Repository path (default: cwd) |
-  | `shell_history_path` | string | No | Path to history file (auto-detected if omitted) |
+  | `shell_history_path` | string | No | Optional regular file under `GIT_TELEMETRY_ALLOWED_HISTORY_ROOTS` or a detected home history file; rejected paths yield a safe partial result |
+
+History access is intentionally narrow. `shell_history_path` must resolve to a
+regular file beneath one of the path-separated directories in
+`GIT_TELEMETRY_ALLOWED_HISTORY_ROOTS`, or to a detected history file under the
+server process user's home directory. Reads are capped at one MiB by default;
+`GIT_TELEMETRY_MAX_HISTORY_BYTES` can lower the limit. Rejected paths are not
+echoed, and successful `history_file` output is passed through serializer path
+scrubbing.
 
 #### `get_temporal_snapshot`
 The Time Machine entry point. Aggregates `git_timeline`, `working_dir_delta`, and `dev_activity` into a unified temporal window.
@@ -373,6 +384,15 @@ Analyzes staged diffs and infers a Conventional Commits message (`feat`, `fix`, 
 
 The server advertises `resources` and `prompts` capabilities during `initialize`.
 
+#### Protocol method scope
+
+Supported request methods are `initialize`, `tools/list`, `tools/call`,
+`resources/list`, `resources/read`, `prompts/list`, and `prompts/get`.
+`notifications/initialized` is accepted as a notification. Other MCP methods,
+including completion, sampling, logging, and resource subscriptions, are not
+implemented and receive JSON-RPC `-32601` (`Method not found`). HTTP requests
+are stateless; SSE provides only a bounded in-memory response queue.
+
 #### Resources
 
 `resources/list` exposes these stable resources:
@@ -380,8 +400,8 @@ The server advertises `resources` and `prompts` capabilities during `initialize`
 | URI | MIME type | Purpose |
 |-----|-----------|---------|
 | `telemetry://session/current` | `application/json` | Recent activity and current session |
-| `telemetry://history/standup` | `text/markdown` | Standup-style recent activity summary |
-| `git://delta/latest` | `text/plain` | Unified diff for the latest commit |
+| `telemetry://history/standup` | `application/json` | JSON standup telemetry envelope |
+| `git://delta/latest` | `application/json` | JSON telemetry envelope containing latest diff |
 
 Call `resources/read` with the URI. A repository may be selected with the optional
 `repo_path` parameter, or with a URI query such as
@@ -415,4 +435,4 @@ uv run pytest
 uv run pytest -v
 ```
 
-All tool handlers and endpoints are validated against JSON Schema contracts and secret redaction rules during automated test runs.
+Automated tests exercise tool input validation, telemetry output envelopes, prompt delimiters, and secret/path redaction. CI also runs Ruff, Mypy, package build, and the pytest suite.

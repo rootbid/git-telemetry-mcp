@@ -1,10 +1,10 @@
 """Unit tests for pure parsing and metric calculation functions."""
 
+from git_telemetry_mcp.tools.dev_activity import _parse_bash_history, _parse_zsh_history
 from git_telemetry_mcp.tools.git_timeline import _parse_reflog_entry
-from git_telemetry_mcp.tools.working_dir_delta import _calculate_change_entropy
-from git_telemetry_mcp.tools.dev_activity import _parse_zsh_history, _parse_bash_history
-from git_telemetry_mcp.tools.smart_commit import _infer_type, _infer_scope
+from git_telemetry_mcp.tools.smart_commit import _infer_scope, _infer_type
 from git_telemetry_mcp.tools.uncommitted_drift import _summarize_drift
+from git_telemetry_mcp.tools.working_dir_delta import _calculate_change_entropy
 
 
 def test_parse_reflog_entry():

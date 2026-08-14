@@ -1,10 +1,8 @@
 """working_dir_delta — dirty working directory summary."""
 
 import asyncio
-import json
-import re
-from git_telemetry_mcp.schema import serialize_telemetry_payload
 
+from git_telemetry_mcp.schema import serialize_telemetry_payload
 
 
 def _calculate_change_entropy(diff_text: str) -> float:
@@ -17,14 +15,14 @@ def _calculate_change_entropy(diff_text: str) -> float:
     changed_lines = 0
     hunk_starts = 0
     for line in lines:
-        if line.startswith(('+', '-')) and not line.startswith(('+++', '---')):
+        if line.startswith(("+", "-")) and not line.startswith(("+++", "---")):
             changed_lines += 1
-        if line.startswith('@@ -'):
+        if line.startswith("@@ -"):
             hunk_starts += 1
 
     # Normalize by number of hunks to give a sense of spread vs concentrated changes
     hunk_factor = hunk_starts if hunk_starts > 0 else 1
-    entropy = (changed_lines / total_lines) * (hunk_starts / hunk_factor) # Simplified
+    entropy = (changed_lines / total_lines) * (hunk_starts / hunk_factor)  # Simplified
     return round(entropy, 4)
 
 
@@ -44,7 +42,15 @@ async def working_dir_delta(arguments: dict) -> str:
     stat_cmd = ["git", "-C", repo_path, "diff", "--stat"]
     staged_stat_cmd = ["git", "-C", repo_path, "diff", "--cached", "--stat"]
     diff_cmd = ["git", "-C", repo_path, "diff", "--no-color", *exclude_args]  # Modified
-    staged_diff_cmd = ["git", "-C", repo_path, "diff", "--cached", "--no-color", *exclude_args]  # Modified
+    staged_diff_cmd = [
+        "git",
+        "-C",
+        repo_path,
+        "diff",
+        "--cached",
+        "--no-color",
+        *exclude_args,
+    ]  # Modified
 
     procs = await asyncio.gather(
         asyncio.create_subprocess_exec(
@@ -54,13 +60,17 @@ async def working_dir_delta(arguments: dict) -> str:
             *stat_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         ),
         asyncio.create_subprocess_exec(
-            *staged_stat_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            *staged_stat_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         ),
         asyncio.create_subprocess_exec(
             *diff_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         ),
         asyncio.create_subprocess_exec(
-            *staged_diff_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            *staged_diff_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         ),
     )
 
@@ -77,9 +87,9 @@ async def working_dir_delta(arguments: dict) -> str:
         if line.startswith("?"):
             # Untracked files, check for preliminary syntax detection (simple file extension)
             file_path = line.split()[-1]
-            file_type = file_path.split('.')[-1] if '.' in file_path else 'unknown'
+            file_type = file_path.split(".")[-1] if "." in file_path else "unknown"
             untracked.append({"file": file_path, "type": file_type})
-        elif line.startswith("1") or line.startswith("2"):
+        elif line.startswith(("1", "2")):
             xy = line.split()[1] if len(line.split()) > 1 else ".."
             path = line.split()[-1]
             if xy[0] != ".":

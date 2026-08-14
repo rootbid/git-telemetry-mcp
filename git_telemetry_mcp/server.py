@@ -1,18 +1,23 @@
 """MCP Server — Stateless HTTP JSON-RPC + SSE transport."""
 
 import asyncio
+import hmac
 import json
+import os
 import uuid
-from urllib.parse import parse_qs, urlsplit
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
+import jsonschema
 import uvicorn
+from sse_starlette.sse import EventSourceResponse
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
-from sse_starlette.sse import EventSourceResponse
 
+from git_telemetry_mcp.privacy import scrub_data, scrub_text
+from git_telemetry_mcp.process import run_git, validate_repo_path
 from git_telemetry_mcp.schema import serialize_telemetry_payload
 from git_telemetry_mcp.tools import TOOLS_REGISTRY
 from git_telemetry_mcp.tools.active_context_pack import get_active_context_pack
@@ -24,6 +29,9 @@ MCP_PROTOCOL_VERSION = "2026-07-28"
 SERVER_INFO = {"name": "git-telemetry-mcp", "version": "0.1.1"}
 TOOLS_LIST_TTL_MS = 600_000
 RESOURCE_MAX_BYTES = 100_000
+DEFAULT_REQUEST_MAX_BYTES = 1_000_000
+MAX_SSE_SESSIONS = 128
+MAX_SSE_QUEUE_ITEMS = 128
 
 # Resources are intentionally stable URIs; clients may select a repository using
 # the optional ``repo_path`` request parameter, like existing tool arguments.
@@ -37,14 +45,14 @@ RESOURCE_DEFINITIONS = (
     {
         "uri": "telemetry://history/standup",
         "name": "Standup history",
-        "description": "A concise Markdown standup assembled from recent telemetry.",
-        "mimeType": "text/markdown",
+        "description": "A concise JSON standup assembled from recent telemetry.",
+        "mimeType": "application/json",
     },
     {
         "uri": "git://delta/latest",
         "name": "Latest commit delta",
-        "description": "The unified diff for the repository's latest commit.",
-        "mimeType": "text/plain",
+        "description": "A JSON telemetry envelope containing the latest commit diff.",
+        "mimeType": "application/json",
     },
 )
 
@@ -79,12 +87,13 @@ PROMPT_DEFINITIONS = (
                 "name": "repo_path",
                 "description": "Path to the Git repository (default: current directory).",
                 "required": False,
-                }
+            }
         ],
     },
 )
 
-# SSE session store (in-memory, per-process)
+# SSE session store (in-memory, per-process). Queues are bounded so a client
+# that disconnects cannot retain unbounded response state.
 _sse_sessions: dict[str, asyncio.Queue] = {}
 
 
@@ -103,6 +112,38 @@ def _mcp_headers() -> dict[str, str]:
 def _method_error(message: str) -> dict:
     """Return the same in-band error shape used by ``tools/call``."""
     return {"content": [{"type": "text", "text": message}], "isError": True}
+
+
+def _validate_tool_arguments(name: str, arguments: dict) -> bool:
+    """Validate caller arguments without exposing schema or value details."""
+    try:
+        jsonschema.validate(
+            arguments, TOOLS_REGISTRY[name]["definition"]["inputSchema"]
+        )
+    except (jsonschema.ValidationError, jsonschema.SchemaError, TypeError):
+        return False
+    return True
+
+
+def _input_required_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Normalize confirmation responses to one scrubbed MCP result shape."""
+    scrubbed = scrub_data(result, include_paths=True)
+    if not isinstance(scrubbed, dict):
+        return {"resultType": "input_required", "content": [], "structuredContent": {}}
+    structured = scrubbed.get("structuredContent")
+    if not isinstance(structured, dict):
+        structured = {
+            "resultType": "input_required",
+            "inputSchema": scrubbed.get("inputSchema", {}),
+        }
+    scrubbed["structuredContent"] = scrub_data(structured, include_paths=True)
+    return scrubbed
+
+
+def _untrusted_git_data(label: str, text: str) -> str:
+    """Delimit and scrub Git-controlled text before placing it in a prompt."""
+    safe = scrub_text(text, include_paths=True)
+    return f"<<<BEGIN UNTRUSTED GIT DATA: {label}>>>\n{safe}\n<<<END UNTRUSTED GIT DATA: {label}>>>"
 
 
 def _serialized_size(text: str) -> int:
@@ -159,27 +200,11 @@ def _resource_content(
 
 
 async def _validate_repo_path(repo_path: Any) -> str | None:
-    """Return an error when ``repo_path`` is not an existing Git worktree."""
-    if not isinstance(repo_path, str) or not repo_path.strip():
-        return "Invalid repo_path: expected a non-empty path to a Git worktree"
+    """Return a stable error without echoing caller filesystem identity."""
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "git",
-            "-C",
-            repo_path,
-            "rev-parse",
-            "--is-inside-work-tree",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-    except (OSError, ValueError) as exc:
-        return f"Invalid repo_path {repo_path!r}: {exc}"
-
-    if proc.returncode != 0 or stdout.decode(errors="replace").strip().lower() != "true":
-        detail = stderr.decode(errors="replace").strip()
-        suffix = f" ({detail})" if detail else ""
-        return f"Invalid repo_path {repo_path!r}: not an existing Git worktree{suffix}"
+        await validate_repo_path(repo_path)
+    except (TypeError, ValueError, OSError):
+        return "Invalid repo_path"
     return None
 
 
@@ -215,7 +240,9 @@ def _payload_parts(serialized: str) -> tuple[Any, float]:
 def _repack_payload(serialized: str, repo_path: str) -> str:
     """Re-run the serializer gate before exposing a tool result as a resource."""
     data, confidence = _payload_parts(serialized)
-    return serialize_telemetry_payload(data, repo_path=repo_path, confidence_score=confidence)
+    return serialize_telemetry_payload(
+        data, repo_path=repo_path, confidence_score=confidence
+    )
 
 
 def _compact(text: str, limit: int = 8_000) -> str:
@@ -239,7 +266,10 @@ async def _handle_initialize(params: dict) -> dict:
 
 async def _handle_tools_list(params: dict) -> dict:
     tools = [entry["definition"] for entry in TOOLS_REGISTRY.values()]
-    return {"tools": tools, "_meta": {"ttlMs": TOOLS_LIST_TTL_MS, "cacheScope": "global"}}
+    return {
+        "tools": tools,
+        "_meta": {"ttlMs": TOOLS_LIST_TTL_MS, "cacheScope": "global"},
+    }
 
 
 async def _handle_resources_list(params: dict) -> dict:
@@ -247,16 +277,13 @@ async def _handle_resources_list(params: dict) -> dict:
 
 
 async def _latest_commit_delta(repo_path: str) -> dict:
-    command = [
-        "git", "-C", repo_path, "show", "--format=", "--no-ext-diff", "--unified=3", "HEAD"
-    ]
-    proc = await asyncio.create_subprocess_exec(
-        *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
-    stdout, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        return {"error": stderr.decode(errors="replace").strip() or "Unable to read latest commit"}
-    return {"diff": stdout.decode(errors="replace")}
+    result = await run_git(repo_path, ["show", "--format=", "--unified=3"])
+    if result.returncode != 0:
+        return {
+            "error": result.stderr.decode(errors="replace").strip()
+            or "Unable to read latest commit"
+        }
+    return {"diff": result.stdout.decode(errors="replace")}
 
 
 async def _handle_resources_read(params: dict) -> dict:
@@ -269,7 +296,9 @@ async def _handle_resources_read(params: dict) -> dict:
     if resource is None:
         return _method_error(f"Unknown resource: {requested_uri}")
 
-    repo_path = query_repo_path if query_repo_path is not None else params.get("repo_path", ".")
+    repo_path = (
+        query_repo_path if query_repo_path is not None else params.get("repo_path", ".")
+    )
     validation_error = await _validate_repo_path(repo_path)
     if validation_error:
         return _method_error(validation_error)
@@ -303,10 +332,16 @@ async def _handle_resources_read(params: dict) -> dict:
         markdown = "# Standup\n\n## Summary\n" + str(summary)
         if event_lines:
             markdown += "\n\n## Recent activity\n" + "\n".join(event_lines)
-        data = {"format": "markdown", "content": markdown, "source": "get_session_timeline"}
+        data = {
+            "format": "markdown",
+            "content": markdown,
+            "source": "get_session_timeline",
+        }
         return _resource_content(
             requested_uri,
-            serialize_telemetry_payload(data, repo_path=repo_path, confidence_score=confidence),
+            serialize_telemetry_payload(
+                data, repo_path=repo_path, confidence_score=confidence
+            ),
             resource["mimeType"],
             repo_path,
         )
@@ -327,7 +362,9 @@ async def _handle_prompts_list(params: dict) -> dict:
 async def _handle_prompts_get(params: dict) -> dict:
     params = params or {}
     name = params.get("name", "")
-    definition = next((prompt for prompt in PROMPT_DEFINITIONS if prompt["name"] == name), None)
+    definition = next(
+        (prompt for prompt in PROMPT_DEFINITIONS if prompt["name"] == name), None
+    )
     if definition is None:
         return _method_error(f"Unknown prompt: {name}")
     arguments = params.get("arguments") or {}
@@ -339,24 +376,32 @@ async def _handle_prompts_get(params: dict) -> dict:
         return _method_error(validation_error)
 
     if name == "review_debug_loop":
-        context = _repack_payload(await get_active_context_pack({"repo_path": repo_path}), repo_path)
+        context = _repack_payload(
+            await get_active_context_pack({"repo_path": repo_path}), repo_path
+        )
         delta = _repack_payload(
-            await working_dir_delta({"repo_path": repo_path, "include_diff": True}), repo_path
+            await working_dir_delta({"repo_path": repo_path, "include_diff": True}),
+            repo_path,
         )
         text = (
             "Review/debug loop: inspect the active context, review the working-tree delta, "
             "reproduce the issue, then validate a focused fix.\n\n"
-            f"Active context:\n{_compact(context)}\n\nWorking-tree delta:\n{_compact(delta)}"
+            f"Active context:\n{_untrusted_git_data('active-context', _compact(context))}\n\n"
+            f"Working-tree delta:\n{_untrusted_git_data('working-tree-delta', _compact(delta))}"
         )
     elif name == "generate_commit_message_context":
-        staged = _repack_payload(await generate_smart_commit({"repo_path": repo_path}), repo_path)
+        staged = _repack_payload(
+            await generate_smart_commit({"repo_path": repo_path}), repo_path
+        )
         text = (
             "Generate a concise conventional commit message from the staged changes. "
             "Preserve the intent and avoid inventing scope.\n\nStaged-change context:\n"
-            f"{_compact(staged)}"
+            f"{_untrusted_git_data('staged-change', _compact(staged))}"
         )
     else:
-        context = _repack_payload(await get_active_context_pack({"repo_path": repo_path}), repo_path)
+        context = _repack_payload(
+            await get_active_context_pack({"repo_path": repo_path}), repo_path
+        )
         timeline = _repack_payload(
             await get_session_timeline(
                 {"since": "24 hours ago", "until": "now", "repo_path": repo_path}
@@ -366,7 +411,8 @@ async def _handle_prompts_get(params: dict) -> dict:
         text = (
             "Prepare concise handover notes: state, recent work, outstanding changes, "
             "and the next useful action.\n\nActive context:\n"
-            f"{_compact(context)}\n\nRecent activity:\n{_compact(timeline)}"
+            f"{_untrusted_git_data('active-context', _compact(context))}\n\n"
+            f"Recent activity:\n{_untrusted_git_data('recent-activity', _compact(timeline))}"
         )
 
     return {
@@ -376,25 +422,121 @@ async def _handle_prompts_get(params: dict) -> dict:
 
 
 async def _handle_tools_call(params: dict) -> dict:
+    if not isinstance(params, dict):
+        return {
+            "content": [{"type": "text", "text": "Invalid tools/call params"}],
+            "isError": True,
+        }
     name = params.get("name", "")
     arguments = params.get("arguments", {})
 
-    if name not in TOOLS_REGISTRY:
+    if not isinstance(name, str) or not name:
         return {
-            "content": [{"type": "text", "text": f"Unknown tool: {name}"}],
+            "content": [{"type": "text", "text": "Invalid tool name"}],
+            "isError": True,
+        }
+    if not isinstance(arguments, dict):
+        return {
+            "content": [{"type": "text", "text": "Invalid tool arguments"}],
+            "isError": True,
+        }
+    if name not in TOOLS_REGISTRY:
+        return {"content": [{"type": "text", "text": "Unknown tool"}], "isError": True}
+    if not _validate_tool_arguments(name, arguments):
+        return {
+            "content": [{"type": "text", "text": "Invalid tool arguments"}],
             "isError": True,
         }
 
     try:
         result = await TOOLS_REGISTRY[name]["handler"](arguments)
         if isinstance(result, dict) and result.get("resultType") == "input_required":
-            return result
-        return {"content": [{"type": "text", "text": result}]}
-    except Exception as e:
+            return _input_required_result(result)
+        text = (
+            result
+            if isinstance(result, str)
+            else json.dumps(result, ensure_ascii=False)
+        )
+        response = {"content": [{"type": "text", "text": text}]}
+        if os.getenv("GIT_TELEMETRY_STRUCTURED_CONTENT", "1").lower() not in {
+            "0",
+            "false",
+            "no",
+        }:
+            try:
+                parsed = json.loads(text)
+            except (TypeError, json.JSONDecodeError):
+                parsed = None
+            if isinstance(parsed, dict):
+                response["structuredContent"] = scrub_data(parsed, include_paths=True)
+        return response
+    except Exception:
         return {
-            "content": [{"type": "text", "text": f"Error: {e}"}],
+            "content": [{"type": "text", "text": "Tool execution failed"}],
             "isError": True,
         }
+
+
+def _validate_rpc_body(body: Any) -> tuple[dict | None, dict | None]:
+    if not isinstance(body, dict):
+        return None, _jsonrpc_error(None, -32600, "Invalid Request")
+    req_id = body.get("id")
+    if (
+        "jsonrpc" not in body
+        or body.get("jsonrpc") != "2.0"
+        or not isinstance(body.get("method"), str)
+        or not body["method"]
+    ):
+        return None, _jsonrpc_error(req_id, -32600, "Invalid Request")
+    if "id" in body and not (
+        req_id is None
+        or isinstance(req_id, (str, int, float))
+        and not isinstance(req_id, bool)
+    ):
+        return None, _jsonrpc_error(None, -32600, "Invalid Request")
+    if "params" in body and not isinstance(body["params"], dict):
+        return None, _jsonrpc_error(req_id, -32602, "Invalid params")
+    if body["method"] == "tools/call":
+        params = body.get("params")
+        if (
+            not isinstance(params, dict)
+            or not isinstance(params.get("name"), str)
+            or not params["name"]
+        ):
+            return None, _jsonrpc_error(req_id, -32602, "Invalid params")
+        if "arguments" in params and not isinstance(params["arguments"], dict):
+            return None, _jsonrpc_error(req_id, -32602, "Invalid params")
+        if params.get("name") in TOOLS_REGISTRY and not _validate_tool_arguments(
+            params["name"], params.get("arguments", {})
+        ):
+            return None, _jsonrpc_error(req_id, -32602, "Invalid tool arguments")
+    return body, None
+
+
+async def _dispatch(body: dict) -> dict | None:
+    is_notification = isinstance(body, dict) and "id" not in body
+    body, validation_error = _validate_rpc_body(body)
+    if validation_error:
+        return None if is_notification else validation_error
+    assert body is not None
+    method = body["method"]
+    params = body.get("params", {})
+    req_id = body.get("id")
+    is_notification = "id" not in body
+
+    if method == "notifications/initialized":
+        return None if is_notification else _jsonrpc_response(req_id, {})
+
+    handler = METHOD_HANDLERS.get(method)
+    if not handler:
+        return (
+            None
+            if is_notification
+            else _jsonrpc_error(req_id, -32601, f"Method not found: {method}")
+        )
+
+    result = await handler(params)
+    return None if is_notification else _jsonrpc_response(req_id, result)
 
 
 METHOD_HANDLERS = {
@@ -408,60 +550,143 @@ METHOD_HANDLERS = {
 }
 
 
-
-async def _dispatch(body: dict) -> dict:
-    method = body.get("method", "")
-    params = body.get("params", {})
-    req_id = body.get("id")
-
-    if method == "notifications/initialized":
-        return _jsonrpc_response(req_id, {})
-
-    handler = METHOD_HANDLERS.get(method)
-    if not handler:
-        return _jsonrpc_error(req_id, -32601, f"Method not found: {method}")
-
-    result = await handler(params)
-    return _jsonrpc_response(req_id, result)
-
-
 # --- HTTP Transport ---
 
-async def mcp_post(request: Request) -> Response:
+
+def _transport_error(
+    status: int, message: str, *, authenticate: bool = False
+) -> Response:
+    headers = _mcp_headers()
+    if authenticate:
+        headers["WWW-Authenticate"] = 'Bearer realm="git-telemetry-mcp"'
+    return JSONResponse({"error": message}, status_code=status, headers=headers)
+
+
+def _origin_allowed(request: Request) -> bool:
+    origin = request.headers.get("origin")
+    if not origin:
+        return True
+    configured = {
+        item.strip().rstrip("/")
+        for item in os.getenv("GIT_TELEMETRY_ALLOWED_ORIGINS", "").split(",")
+        if item.strip()
+    }
+    if configured:
+        return origin.rstrip("/") in configured
     try:
-        body = await request.json()
-    except Exception:
+        parsed = urlsplit(origin)
+    except ValueError:
+        return False
+    return parsed.scheme in {"http", "https"} and parsed.hostname in {
+        "localhost",
+        "127.0.0.1",
+        "::1",
+    }
+
+
+def _request_boundary(request: Request, *, json_body: bool = False) -> Response | None:
+    token = os.getenv("GIT_TELEMETRY_AUTH_TOKEN")
+    if token:
+        authorization = request.headers.get("authorization", "")
+        supplied = (
+            authorization[7:] if authorization.lower().startswith("bearer ") else ""
+        )
+        if not supplied or not hmac.compare_digest(supplied, token):
+            return _transport_error(401, "Unauthorized", authenticate=True)
+    else:
+        client_host = request.client.host if request.client else None
+        if client_host and client_host not in {"localhost", "127.0.0.1", "::1"}:
+            return _transport_error(
+                403, "Localhost access required when GIT_TELEMETRY_AUTH_TOKEN is unset"
+            )
+    if not _origin_allowed(request):
+        return _transport_error(403, "Origin not allowed")
+    if json_body:
+        content_type = (
+            request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        )
+        if content_type != "application/json":
+            return _transport_error(415, "Content-Type must be application/json")
+    return None
+
+
+def _request_max_bytes() -> int:
+    try:
+        return max(
+            1,
+            int(
+                os.getenv("GIT_TELEMETRY_MAX_REQUEST_BYTES", DEFAULT_REQUEST_MAX_BYTES)
+            ),
+        )
+    except ValueError:
+        return DEFAULT_REQUEST_MAX_BYTES
+
+
+async def mcp_post(request: Request) -> Response:
+    boundary_error = _request_boundary(request, json_body=True)
+    if boundary_error:
+        return boundary_error
+    maximum = _request_max_bytes()
+    try:
+        declared_length = int(request.headers.get("content-length", "0"))
+    except ValueError:
+        declared_length = 0
+    if declared_length > maximum:
+        return _transport_error(413, "Request body too large")
+    raw_body = await request.body()
+    if len(raw_body) > maximum:
+        return _transport_error(413, "Request body too large")
+    try:
+        body = json.loads(raw_body)
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
         return JSONResponse(
-            _jsonrpc_error(None, -32700, "Parse error"),
-            headers=_mcp_headers(),
+            _jsonrpc_error(None, -32700, "Parse error"), headers=_mcp_headers()
         )
 
-    # Check if this is an SSE session message
-    session_id = request.headers.get("mcp-session-id")
+    session_id = request.headers.get("mcp-session-id") or request.query_params.get(
+        "session_id"
+    )
+    response = await _dispatch(body)
     if session_id and session_id in _sse_sessions:
-        response = await _dispatch(body)
-        await _sse_sessions[session_id].put(response)
+        if response is not None:
+            queue = _sse_sessions[session_id]
+            if queue.full():
+                queue.get_nowait()
+            queue.put_nowait(response)
+        return Response(status_code=202, headers=_mcp_headers())
+    if response is None:
         return Response(status_code=202, headers=_mcp_headers())
 
-    response = await _dispatch(body)
-
     resp_headers = _mcp_headers()
-    resp_headers["Mcp-Method"] = body.get("method", "")
-    if body.get("method") == "tools/call":
-        resp_headers["Mcp-Name"] = body.get("params", {}).get("name", "")
-    if body.get("method") == "initialize":
-        new_session = str(uuid.uuid4())
-        resp_headers["Mcp-Session-Id"] = new_session
-
+    if isinstance(body, dict):
+        resp_headers["Mcp-Method"] = body.get("method", "")
+        if body.get("method") == "tools/call":
+            params = body.get("params") or {}
+            if isinstance(params, dict):
+                resp_headers["Mcp-Name"] = params.get("name", "")
+        if body.get("method") == "initialize":
+            resp_headers["Mcp-Session-Id"] = str(uuid.uuid4())
     return JSONResponse(response, headers=resp_headers)
 
 
 # --- SSE Transport ---
-
 async def mcp_sse(request: Request) -> Response:
-    session_id = request.query_params.get("session_id") or str(uuid.uuid4())
-    queue: asyncio.Queue = asyncio.Queue()
-    _sse_sessions[session_id] = queue
+    boundary_error = _request_boundary(request)
+    if boundary_error:
+        return boundary_error
+    session_id = (
+        request.headers.get("mcp-session-id")
+        or request.query_params.get("session_id")
+        or str(uuid.uuid4())
+    )
+    if len(session_id) > 256:
+        return _transport_error(400, "Invalid session id")
+    queue = _sse_sessions.get(session_id)
+    if queue is None:
+        if len(_sse_sessions) >= MAX_SSE_SESSIONS:
+            return _transport_error(429, "Too many SSE sessions")
+        queue = asyncio.Queue(maxsize=MAX_SSE_QUEUE_ITEMS)
+        _sse_sessions[session_id] = queue
 
     async def event_generator():
         yield {"event": "endpoint", "data": f"/mcp?session_id={session_id}"}
@@ -472,14 +697,17 @@ async def mcp_sse(request: Request) -> Response:
         except asyncio.CancelledError:
             pass
         finally:
-            _sse_sessions.pop(session_id, None)
+            if _sse_sessions.get(session_id) is queue:
+                _sse_sessions.pop(session_id, None)
 
     return EventSourceResponse(event_generator(), headers=_mcp_headers())
 
 
 # --- Health ---
-
-async def health(request: Request) -> JSONResponse:
+async def health(request: Request) -> JSONResponse | Response:
+    boundary_error = _request_boundary(request)
+    if boundary_error:
+        return boundary_error
     return JSONResponse({"status": "ok", "server": SERVER_INFO})
 
 

@@ -1,18 +1,18 @@
 """Unit tests for the fuzzy temporal parser (Phase 1)."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from git_telemetry_mcp.temporal import (
-    parse_relative_duration,
-    parse_ordinal_ref,
-    parse_iso_range,
     parse_colloquial,
+    parse_iso_range,
+    parse_ordinal_ref,
+    parse_relative_duration,
     resolve_time_range,
 )
 
-FIXED_NOW = datetime(2026, 8, 7, 15, 0, 0, tzinfo=timezone.utc)
+FIXED_NOW = datetime(2026, 8, 7, 15, 0, 0, tzinfo=UTC)
 
 
 def test_parse_relative_duration_variants():
@@ -39,6 +39,30 @@ def test_parse_iso_range():
     assert parse_iso_range("2026-08-01") == ("2026-08-01", "now")
     assert parse_iso_range("2026-08-01 12:30:00") == ("2026-08-01 12:30:00", "now")
     assert parse_iso_range("last week") is None
+    assert parse_iso_range("2026-08-01T12:30:00+05:30..2026-08-01T06:00:00Z") is None
+    assert parse_iso_range("2026-02-30") is None
+    assert parse_iso_range("2026-08-02..2026-08-01") is None
+    assert parse_iso_range("2026-08-01T12:30:00+05:30") == (
+        "2026-08-01T12:30:00+05:30",
+        "now",
+    )
+
+
+def test_temporal_grammars_are_bounded_and_exact():
+    assert parse_relative_duration("999999999999999999999999d") is None
+    assert parse_relative_duration("1 lightyear") is None
+    assert parse_colloquial("this morning meeting", FIXED_NOW) is None
+    assert parse_colloquial("yesterday-ish", FIXED_NOW) is None
+    _, night_end = parse_colloquial("last night", FIXED_NOW)
+    assert night_end.hour == 0 and night_end.minute == 0 and night_end.second == 0
+
+
+@pytest.mark.asyncio
+async def test_invalid_huge_duration_does_not_become_a_window():
+    result = await resolve_time_range("999999999999999999999999d", now=FIXED_NOW)
+    assert result["resolved_from"] == "fallback"
+    invalid = await resolve_time_range("1.hour.ago trailing", now=FIXED_NOW)
+    assert invalid["resolved_from"] == "fallback"
 
 
 def test_parse_colloquial_morning():
@@ -102,7 +126,9 @@ async def test_resolve_fallback_ambiguous():
 @pytest.mark.asyncio
 async def test_resolve_ordinal_against_repo(repo_with_history):
     # repo_with_history performs checkouts (main -> feature/test -> main).
-    res = await resolve_time_range("2 checkouts ago", repo_path=str(repo_with_history), now=FIXED_NOW)
+    res = await resolve_time_range(
+        "2 checkouts ago", repo_path=str(repo_with_history), now=FIXED_NOW
+    )
     assert res["resolved_from"] == "reflog_ordinal"
     assert res["confidence"] == 0.85
     # 'since' is a concrete reflog timestamp, not the passthrough string.
@@ -112,6 +138,8 @@ async def test_resolve_ordinal_against_repo(repo_with_history):
 @pytest.mark.asyncio
 async def test_resolve_ordinal_unresolved(temp_git_repo):
     # A fresh repo has no pushes recorded in the reflog.
-    res = await resolve_time_range("5 pushes ago", repo_path=str(temp_git_repo), now=FIXED_NOW)
+    res = await resolve_time_range(
+        "5 pushes ago", repo_path=str(temp_git_repo), now=FIXED_NOW
+    )
     assert res["resolved_from"] == "reflog_ordinal_unresolved"
     assert res["confidence"] == 0.4

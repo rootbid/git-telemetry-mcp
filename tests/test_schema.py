@@ -1,12 +1,13 @@
 """Unit tests for schema module and telemetry envelope."""
 
 import json
+
 from git_telemetry_mcp.schema import (
     calculate_repo_checksum,
     get_timezone_offset,
-    wrap_telemetry_payload,
-    serialize_telemetry_payload,
     make_output_schema,
+    serialize_telemetry_payload,
+    wrap_telemetry_payload,
 )
 
 
@@ -24,7 +25,7 @@ def test_calculate_repo_checksum(tmp_path):
 
 def test_get_timezone_offset():
     tz = get_timezone_offset()
-    assert tz.startswith("+") or tz.startswith("-")
+    assert tz.startswith(("+", "-"))
     assert len(tz) == 6
     assert tz[3] == ":"
 

@@ -10,7 +10,9 @@ from git_telemetry_mcp.tools.session_timeline import get_session_timeline
 @pytest.mark.asyncio
 async def test_session_timeline_exposes_sessions(repo_with_history):
     payload = json.loads(
-        await get_session_timeline({"since": "30.days.ago", "repo_path": str(repo_with_history)})
+        await get_session_timeline(
+            {"since": "30.days.ago", "repo_path": str(repo_with_history)}
+        )
     )
     data = payload["data"]
     assert "sessions" in data
@@ -25,7 +27,9 @@ async def test_session_timeline_exposes_sessions(repo_with_history):
 @pytest.mark.asyncio
 async def test_session_timeline_select_by_id(repo_with_history):
     full = json.loads(
-        await get_session_timeline({"since": "30.days.ago", "repo_path": str(repo_with_history)})
+        await get_session_timeline(
+            {"since": "30.days.ago", "repo_path": str(repo_with_history)}
+        )
     )
     n_sessions = len(full["data"]["sessions"])
 
@@ -41,9 +45,27 @@ async def test_session_timeline_select_by_id(repo_with_history):
 
     missing = json.loads(
         await get_session_timeline(
-            {"since": "30.days.ago", "repo_path": str(repo_with_history), "session": n_sessions + 5}
+            {
+                "since": "30.days.ago",
+                "repo_path": str(repo_with_history),
+                "session": n_sessions + 5,
+            }
         )
     )
     assert missing["data"]["selected_session"] is None
     assert "session_error" in missing["data"]
     assert missing["confidence_score"] == 0.5
+
+
+@pytest.mark.asyncio
+async def test_session_timeline_filters_stashes_outside_window(repo_with_history):
+    payload = json.loads(
+        await get_session_timeline(
+            {
+                "since": "2999-01-01",
+                "until": "2999-01-02",
+                "repo_path": str(repo_with_history),
+            }
+        )
+    )
+    assert payload["data"]["events"] == []

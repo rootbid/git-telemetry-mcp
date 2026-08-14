@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from git_telemetry_mcp.cache import TTLCache, make_cache_key, SNAPSHOT_CACHE
+from git_telemetry_mcp.cache import SNAPSHOT_CACHE, TTLCache, make_cache_key
 from git_telemetry_mcp.tools.temporal_snapshot import get_temporal_snapshot
 
 
@@ -51,10 +51,14 @@ async def test_snapshot_cache_hit_miss(repo_with_history):
     SNAPSHOT_CACHE.clear()
     repo_path = str(repo_with_history)
 
-    first = json.loads(await get_temporal_snapshot({"time_range": "last 45m", "repo_path": repo_path}))
+    first = json.loads(
+        await get_temporal_snapshot({"time_range": "last 45m", "repo_path": repo_path})
+    )
     assert first["data"]["_meta"]["cache"] == "miss"
 
-    second = json.loads(await get_temporal_snapshot({"time_range": "last 45m", "repo_path": repo_path}))
+    second = json.loads(
+        await get_temporal_snapshot({"time_range": "last 45m", "repo_path": repo_path})
+    )
     assert second["data"]["_meta"]["cache"] == "hit"
 
     # Warm result reproduces the cold payload apart from the cache marker.
@@ -69,7 +73,9 @@ async def test_snapshot_bounded_window(repo_with_history):
 
     SNAPSHOT_CACHE.clear()
     payload = json.loads(
-        await get_temporal_snapshot({"time_range": "last 45m", "repo_path": str(repo_with_history)})
+        await get_temporal_snapshot(
+            {"time_range": "last 45m", "repo_path": str(repo_with_history)}
+        )
     )
     rng = payload["data"]["range"]
     assert rng["resolved_from"] == "relative_duration"
@@ -77,3 +83,18 @@ async def test_snapshot_bounded_window(repo_with_history):
     until = datetime.fromisoformat(rng["until"])
     delta = (until - since).total_seconds()
     assert abs(delta - 45 * 60) < 1
+
+
+@pytest.mark.asyncio
+async def test_snapshot_cache_invalidates_on_worktree_change(repo_with_history):
+    SNAPSHOT_CACHE.clear()
+    repo_path = str(repo_with_history)
+    first = json.loads(
+        await get_temporal_snapshot({"time_range": "last 45m", "repo_path": repo_path})
+    )
+    assert first["data"]["_meta"]["cache"] == "miss"
+    (repo_with_history / "new-work.py").write_text("print('changed')\n")
+    second = json.loads(
+        await get_temporal_snapshot({"time_range": "last 45m", "repo_path": repo_path})
+    )
+    assert second["data"]["_meta"]["cache"] == "miss"

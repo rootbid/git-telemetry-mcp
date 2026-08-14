@@ -37,13 +37,18 @@ def test_no_gap_single_session():
 def test_branch_switch_boundary():
     events = [
         _ev("2026-08-06 09:00:00 +0000"),
-        _ev("2026-08-06 09:02:00 +0000", type_="reflog",
-            action="checkout: moving from main to feature/x"),
+        _ev(
+            "2026-08-06 09:02:00 +0000",
+            type_="reflog",
+            action="checkout: moving from main to feature/x",
+        ),
         _ev("2026-08-06 09:03:00 +0000"),
     ]
     sessions = segment_sessions(events, gap_seconds=900)
     assert len(sessions) == 2
-    switch_session = next(s for s in sessions if s["boundary_reason"] == "branch_switch")
+    switch_session = next(
+        s for s in sessions if s["boundary_reason"] == "branch_switch"
+    )
     assert "main" in switch_session["branches"]
     assert "feature/x" in switch_session["branches"]
 
@@ -66,3 +71,30 @@ def test_select_session():
     assert select_session(sessions, "Session #1")["session_id"] == 1
     assert select_session(sessions, 99) is None
     assert select_session(sessions, "none") is None
+
+
+def test_session_dates_are_utc_aware_and_event_dates_normalized():
+    sessions = segment_sessions(
+        [
+            _ev("2026-08-06 09:00:00"),
+            _ev("2026-08-06T09:05:00+02:00"),
+        ]
+    )
+    assert sessions[0]["start"].endswith("+00:00")
+    assert sessions[0]["end"].endswith("+00:00")
+    assert all(event["date"].endswith("+00:00") for event in sessions[0]["events"])
+
+
+def test_session_selector_rejects_malformed_values():
+    events = [_ev("2026-08-06 09:00:00 +0000")]
+    sessions = segment_sessions(events)
+    for selector in (True, 1.0, "Session #1 extra", "#1 trailing", "0", "-1", "one"):
+        assert select_session(sessions, selector) is None
+
+
+def test_session_event_processing_is_bounded():
+    events = [
+        _ev(f"2026-08-06 09:{minute % 60:02d}:00 +0000") for minute in range(1500)
+    ]
+    sessions = segment_sessions(events)
+    assert sum(session["event_count"] for session in sessions) <= 1000

@@ -1,9 +1,8 @@
 """explain_uncommitted_drift — summarize architectural direction of uncommitted changes."""
 
 import asyncio
-import json
-from git_telemetry_mcp.schema import serialize_telemetry_payload
 
+from git_telemetry_mcp.schema import serialize_telemetry_payload
 
 
 async def explain_uncommitted_drift(arguments: dict) -> str:
@@ -15,7 +14,9 @@ async def explain_uncommitted_drift(arguments: dict) -> str:
 
     stat_proc, diff_proc, staged_proc = await asyncio.gather(
         asyncio.create_subprocess_exec(
-            *diff_stat_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            *diff_stat_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         ),
         asyncio.create_subprocess_exec(
             *diff_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -47,7 +48,15 @@ async def explain_uncommitted_drift(arguments: dict) -> str:
             additions += 1
             stripped = line[1:].strip()
             if stripped.startswith(("def ", "async def ", "func ", "fn ", "function ")):
-                new_functions.append(stripped.split("(")[0].replace("def ", "").replace("async ", "").replace("func ", "").replace("fn ", "").replace("function ", "").strip())
+                new_functions.append(
+                    stripped.split("(")[0]
+                    .replace("def ", "")
+                    .replace("async ", "")
+                    .replace("func ", "")
+                    .replace("fn ", "")
+                    .replace("function ", "")
+                    .strip()
+                )
             if stripped.startswith(("import ", "from ", "require(", "use ")):
                 new_imports.append(stripped)
         elif line.startswith("-") and not line.startswith("---"):
@@ -71,12 +80,16 @@ async def explain_uncommitted_drift(arguments: dict) -> str:
             "new_imports": new_imports[:20],
             "directories_touched": dir_changes,
         },
-        "drift_summary": _summarize_drift(files_changed, new_functions, new_imports, additions, deletions),
+        "drift_summary": _summarize_drift(
+            files_changed, new_functions, new_imports, additions, deletions
+        ),
     }
     return serialize_telemetry_payload(result, repo_path=repo_path)
 
 
-def _summarize_drift(files: set, functions: list, imports: list, adds: int, dels: int) -> str:
+def _summarize_drift(
+    files: set, functions: list, imports: list, adds: int, dels: int
+) -> str:
     parts = []
     if adds > dels * 2:
         parts.append("Mostly additive (new code)")
@@ -88,6 +101,6 @@ def _summarize_drift(files: set, functions: list, imports: list, adds: int, dels
     if functions:
         parts.append(f"New functions: {', '.join(functions[:5])}")
     if imports:
-        parts.append(f"New dependencies being pulled in")
+        parts.append("New dependencies being pulled in")
 
     return "; ".join(parts) if parts else "Minimal changes"

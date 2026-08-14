@@ -9,20 +9,37 @@ the ``_meta.cache`` marker.
 
 import asyncio
 import json
+from datetime import UTC, datetime
 
-from git_telemetry_mcp.cache import SNAPSHOT_CACHE, git_tip, make_cache_key
+from git_telemetry_mcp.cache import SNAPSHOT_CACHE, git_state, make_cache_key
 from git_telemetry_mcp.schema import serialize_telemetry_payload
 from git_telemetry_mcp.temporal import resolve_time_range
-
+from git_telemetry_mcp.tools.dev_activity import dev_activity
 from git_telemetry_mcp.tools.git_timeline import git_timeline
 from git_telemetry_mcp.tools.working_dir_delta import working_dir_delta
-from git_telemetry_mcp.tools.dev_activity import dev_activity
 
 
-def _emit(snapshot: dict, confidence: float, repo_path, cache_state: str, key: str) -> str:
+def _emit(
+    snapshot: dict, confidence: float, repo_path, cache_state: str, key: str
+) -> str:
     out = dict(snapshot)
     out["_meta"] = {"cache": cache_state, "cache_key": key[:12]}
-    return serialize_telemetry_payload(out, repo_path=repo_path, confidence_score=confidence)
+    return serialize_telemetry_payload(
+        out, repo_path=repo_path, confidence_score=confidence
+    )
+
+
+def _cache_window_value(value: str) -> str:
+    """Canonicalize dynamic timestamps to one-second buckets for cache hits."""
+    if not isinstance(value, str):
+        return str(value)
+    if value.strip().lower() == "now":
+        return datetime.now(UTC).replace(microsecond=0).isoformat()
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return value
+    return parsed.replace(microsecond=0).isoformat()
 
 
 async def get_temporal_snapshot(arguments: dict) -> str:
@@ -35,20 +52,26 @@ async def get_temporal_snapshot(arguments: dict) -> str:
     until = resolved["until"]
     confidence = resolved["confidence"]
 
-    tip = await git_tip(repo_path)
-    # Key on the (normalized) original expression, not the resolved timestamps:
-    # relative windows ("last 45m") resolve against wall-clock `now`, so keying on
-    # resolved timestamps would never hit. Expression + tip + granularity keeps
-    # identical consecutive calls deterministic within the TTL; a moved tip
-    # invalidates. Resolution is bounded by the cache TTL.
-    key = make_cache_key(repo_path, time_range_str.strip().lower(), "", tip, extra=granularity)
+    state = await git_state(repo_path)
+    # relative expressions cannot reuse an old range indefinitely.
+    key = make_cache_key(
+        repo_path,
+        _cache_window_value(since),
+        _cache_window_value(until),
+        state,
+        extra=f"{time_range_str.strip().lower()}|{granularity}",
+    )
 
     cached = SNAPSHOT_CACHE.get(key)
     if cached is not None:
         snapshot, cached_confidence = cached
         return _emit(snapshot, cached_confidence, repo_path, "hit", key)
 
-    git_timeline_result, working_dir_delta_result, dev_activity_result = await asyncio.gather(
+    (
+        git_timeline_result,
+        working_dir_delta_result,
+        dev_activity_result,
+    ) = await asyncio.gather(
         git_timeline({"since": since, "until": until, "repo_path": repo_path}),
         working_dir_delta({"include_diff": True, "repo_path": repo_path}),
         dev_activity({"since": since, "until": until, "repo_path": repo_path}),

@@ -1,9 +1,8 @@
 """get_active_context_pack — prompt-optimized context blob."""
 
 import asyncio
-import json
-from git_telemetry_mcp.schema import serialize_telemetry_payload
 
+from git_telemetry_mcp.schema import serialize_telemetry_payload
 
 
 async def get_active_context_pack(arguments: dict) -> str:
@@ -29,7 +28,9 @@ async def get_active_context_pack(arguments: dict) -> str:
             *remote_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         ),
         asyncio.create_subprocess_exec(
-            *upstream_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            *upstream_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         ),
     )
 
@@ -51,7 +52,7 @@ async def get_active_context_pack(arguments: dict) -> str:
     merge_proc = await asyncio.create_subprocess_exec(
         *merge_head_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
-    merge_out, merge_err = await merge_proc.communicate()
+    _merge_out, _merge_err = await merge_proc.communicate()
     in_merge = merge_proc.returncode == 0
 
     # Check for rebase in progress
@@ -62,6 +63,7 @@ async def get_active_context_pack(arguments: dict) -> str:
     rebase_out, _ = await rebase_proc.communicate()
 
     import os
+
     rebase_path = rebase_out.decode().strip()
     in_rebase = os.path.isdir(rebase_path) if rebase_path else False
 

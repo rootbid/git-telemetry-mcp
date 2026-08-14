@@ -1,22 +1,24 @@
 """Tools registry with annotations and output schemas for MCP tools/list and tools/call."""
 
+from git_telemetry_mcp.process import install_safe_subprocess, validate_repo_path
 from git_telemetry_mcp.schema import make_output_schema
-
-from git_telemetry_mcp.tools.git_timeline import git_timeline
-from git_telemetry_mcp.tools.working_dir_delta import working_dir_delta
-from git_telemetry_mcp.tools.dev_activity import dev_activity
-from git_telemetry_mcp.tools.session_timeline import get_session_timeline
-from git_telemetry_mcp.tools.uncommitted_drift import explain_uncommitted_drift
-from git_telemetry_mcp.tools.file_evolution import trace_file_evolution
 from git_telemetry_mcp.tools.active_context_pack import get_active_context_pack
-from git_telemetry_mcp.tools.safe_operations import safe_git_reset, safe_git_checkout
-from git_telemetry_mcp.tools.stash_isolate import stash_and_isolate
-from git_telemetry_mcp.tools.stale_branches import detect_stale_branches
-from git_telemetry_mcp.tools.smart_commit import generate_smart_commit
-from git_telemetry_mcp.tools.developer_velocity import get_developer_velocity
-from git_telemetry_mcp.tools.conflict_check import conflict_prelim_check
-from git_telemetry_mcp.tools.temporal_snapshot import get_temporal_snapshot
 from git_telemetry_mcp.tools.compare_checkpoints import compare_workspace_checkpoints
+from git_telemetry_mcp.tools.conflict_check import conflict_prelim_check
+from git_telemetry_mcp.tools.dev_activity import dev_activity
+from git_telemetry_mcp.tools.developer_velocity import get_developer_velocity
+from git_telemetry_mcp.tools.file_evolution import trace_file_evolution
+from git_telemetry_mcp.tools.git_timeline import git_timeline
+from git_telemetry_mcp.tools.safe_operations import safe_git_checkout, safe_git_reset
+from git_telemetry_mcp.tools.session_timeline import get_session_timeline
+from git_telemetry_mcp.tools.smart_commit import generate_smart_commit
+from git_telemetry_mcp.tools.stale_branches import detect_stale_branches
+from git_telemetry_mcp.tools.stash_isolate import stash_and_isolate
+from git_telemetry_mcp.tools.temporal_snapshot import get_temporal_snapshot
+from git_telemetry_mcp.tools.uncommitted_drift import explain_uncommitted_drift
+from git_telemetry_mcp.tools.working_dir_delta import working_dir_delta
+
+install_safe_subprocess()
 
 
 def _tool_entry(
@@ -29,6 +31,14 @@ def _tool_entry(
     destructive: bool = False,
     idempotent: bool = True,
 ) -> dict:
+    async def validated_handler(arguments: dict):
+        if not isinstance(arguments, dict):
+            raise ValueError("Invalid tool arguments: expected an object")
+        checked = dict(arguments)
+        checked["_repo_path_provided"] = "repo_path" in arguments
+        checked["repo_path"] = await validate_repo_path(checked.get("repo_path", "."))
+        return await handler(checked)
+
     annotations = {
         "readOnly": read_only,
         "destructive": destructive,
@@ -48,7 +58,7 @@ def _tool_entry(
         "annotations": annotations,
     }
     return {
-        "handler": handler,
+        "handler": validated_handler,
         "definition": definition,
     }
 
@@ -64,9 +74,18 @@ TOOLS_REGISTRY: dict[str, dict] = {
         input_schema={
             "type": "object",
             "properties": {
-                "since": {"type": "string", "description": "Start of time range (e.g. '3.hours.ago')."},
-                "until": {"type": "string", "description": "End of time range (default: now)."},
-                "repo_path": {"type": "string", "description": "Path to git repository (default: cwd)."},
+                "since": {
+                    "type": "string",
+                    "description": "Start of time range (e.g. '3.hours.ago').",
+                },
+                "until": {
+                    "type": "string",
+                    "description": "End of time range (default: now).",
+                },
+                "repo_path": {
+                    "type": "string",
+                    "description": "Path to git repository (default: cwd).",
+                },
             },
             "required": ["since"],
         },
@@ -92,8 +111,14 @@ TOOLS_REGISTRY: dict[str, dict] = {
         input_schema={
             "type": "object",
             "properties": {
-                "repo_path": {"type": "string", "description": "Path to git repository (default: cwd)."},
-                "include_diff": {"type": "boolean", "description": "Include full diff content (default: false)."},
+                "repo_path": {
+                    "type": "string",
+                    "description": "Path to git repository (default: cwd).",
+                },
+                "include_diff": {
+                    "type": "boolean",
+                    "description": "Include full diff content (default: false).",
+                },
             },
         },
         data_schema={
@@ -106,7 +131,13 @@ TOOLS_REGISTRY: dict[str, dict] = {
                 "change_entropy": {"type": "number"},
                 "hunk_diffs": {"type": "object"},
             },
-            "required": ["staged", "unstaged", "untracked", "summary", "change_entropy"],
+            "required": [
+                "staged",
+                "unstaged",
+                "untracked",
+                "summary",
+                "change_entropy",
+            ],
         },
         read_only=True,
         destructive=False,
@@ -115,14 +146,33 @@ TOOLS_REGISTRY: dict[str, dict] = {
     "dev_activity": _tool_entry(
         handler=dev_activity,
         name="dev_activity",
-        description="Correlate shell history with git activity over a time range to reconstruct developer workflow.",
+        description=(
+            "Correlate permitted shell history with git activity over a time range. "
+            "Explicit history paths must be regular files under "
+            "GIT_TELEMETRY_ALLOWED_HISTORY_ROOTS or detected home history files."
+        ),
         input_schema={
             "type": "object",
             "properties": {
-                "since": {"type": "string", "description": "Start of time range (e.g. '2.hours.ago')."},
-                "until": {"type": "string", "description": "End of time range (default: now)."},
-                "repo_path": {"type": "string", "description": "Path to git repository (default: cwd)."},
-                "shell_history_path": {"type": "string", "description": "Path to shell history file."},
+                "since": {
+                    "type": "string",
+                    "description": "Start of time range (e.g. '2.hours.ago').",
+                },
+                "until": {
+                    "type": "string",
+                    "description": "End of time range (default: now).",
+                },
+                "repo_path": {
+                    "type": "string",
+                    "description": "Path to git repository (default: cwd).",
+                },
+                "shell_history_path": {
+                    "type": "string",
+                    "description": (
+                        "Optional regular history file path. It must be under a configured "
+                        "GIT_TELEMETRY_ALLOWED_HISTORY_ROOTS root or be a detected home history file."
+                    ),
+                },
             },
             "required": ["since"],
         },
@@ -134,9 +184,11 @@ TOOLS_REGISTRY: dict[str, dict] = {
                 "git_events": {"type": "array"},
                 "summary": {"type": "string"},
                 "history_file": {"type": "string"},
+                "history_error": {"type": "string"},
+                "history_bytes_truncated": {"type": "boolean"},
                 "history_precision_warning": {"type": "string"},
             },
-            "required": ["range", "shell_commands", "git_events", "summary", "history_file"],
+            "required": ["range", "shell_commands", "git_events", "summary"],
         },
         read_only=True,
         destructive=False,
@@ -149,10 +201,22 @@ TOOLS_REGISTRY: dict[str, dict] = {
         input_schema={
             "type": "object",
             "properties": {
-                "since": {"type": "string", "description": "Start of time range (e.g. '3.hours.ago')."},
-                "until": {"type": "string", "description": "End of time range (default: now)."},
-                "repo_path": {"type": "string", "description": "Path to git repository (default: cwd)."},
-                "session": {"type": ["string", "integer"], "description": "Optional session selector (e.g. 3, '#3', 'Session #3') to focus events on one detected session."},
+                "since": {
+                    "type": "string",
+                    "description": "Start of time range (e.g. '3.hours.ago').",
+                },
+                "until": {
+                    "type": "string",
+                    "description": "End of time range (default: now).",
+                },
+                "repo_path": {
+                    "type": "string",
+                    "description": "Path to git repository (default: cwd).",
+                },
+                "session": {
+                    "type": ["string", "integer"],
+                    "description": "Optional session selector (e.g. 3, '#3', 'Session #3') to focus events on one detected session.",
+                },
             },
             "required": ["since"],
         },
@@ -178,7 +242,10 @@ TOOLS_REGISTRY: dict[str, dict] = {
         input_schema={
             "type": "object",
             "properties": {
-                "repo_path": {"type": "string", "description": "Path to git repository (default: cwd)."},
+                "repo_path": {
+                    "type": "string",
+                    "description": "Path to git repository (default: cwd).",
+                },
             },
         },
         data_schema={
@@ -202,9 +269,18 @@ TOOLS_REGISTRY: dict[str, dict] = {
         input_schema={
             "type": "object",
             "properties": {
-                "file_path": {"type": "string", "description": "Path to the file to trace (relative to repo root)."},
-                "repo_path": {"type": "string", "description": "Path to git repository (default: cwd)."},
-                "max_commits": {"type": "integer", "description": "Maximum commits to analyze (default: 10)."},
+                "file_path": {
+                    "type": "string",
+                    "description": "Path to the file to trace (relative to repo root).",
+                },
+                "repo_path": {
+                    "type": "string",
+                    "description": "Path to git repository (default: cwd).",
+                },
+                "max_commits": {
+                    "type": "integer",
+                    "description": "Maximum commits to analyze (default: 10).",
+                },
             },
             "required": ["file_path"],
         },
@@ -217,7 +293,13 @@ TOOLS_REGISTRY: dict[str, dict] = {
                 "blame_summary": {"type": "object"},
                 "summary": {"type": "string"},
             },
-            "required": ["file", "commit_history", "stash_appearances", "blame_summary", "summary"],
+            "required": [
+                "file",
+                "commit_history",
+                "stash_appearances",
+                "blame_summary",
+                "summary",
+            ],
         },
         read_only=True,
         destructive=False,
@@ -230,7 +312,10 @@ TOOLS_REGISTRY: dict[str, dict] = {
         input_schema={
             "type": "object",
             "properties": {
-                "repo_path": {"type": "string", "description": "Path to git repository (default: cwd)."},
+                "repo_path": {
+                    "type": "string",
+                    "description": "Path to git repository (default: cwd).",
+                },
             },
         },
         data_schema={
@@ -244,7 +329,15 @@ TOOLS_REGISTRY: dict[str, dict] = {
                 "state": {"type": "object"},
                 "summary": {"type": "string"},
             },
-            "required": ["branch", "recent_commits", "modified_files", "unpushed_commits", "remotes", "state", "summary"],
+            "required": [
+                "branch",
+                "recent_commits",
+                "modified_files",
+                "unpushed_commits",
+                "remotes",
+                "state",
+                "summary",
+            ],
         },
         read_only=True,
         destructive=False,
@@ -257,10 +350,23 @@ TOOLS_REGISTRY: dict[str, dict] = {
         input_schema={
             "type": "object",
             "properties": {
-                "target": {"type": "string", "description": "Reset target (default: HEAD)."},
-                "mode": {"type": "string", "enum": ["--hard", "--soft", "--mixed"], "description": "Reset mode."},
-                "repo_path": {"type": "string", "description": "Path to git repository (default: cwd)."},
-                "confirmation_id": {"type": "string", "description": "Confirmation ID from previous input_required response."},
+                "target": {
+                    "type": "string",
+                    "description": "Reset target (default: HEAD).",
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["--hard", "--soft", "--mixed"],
+                    "description": "Reset mode.",
+                },
+                "repo_path": {
+                    "type": "string",
+                    "description": "Path to git repository (default: cwd).",
+                },
+                "confirmation_id": {
+                    "type": "string",
+                    "description": "Confirmation ID from previous input_required response.",
+                },
             },
         },
         data_schema={
@@ -284,10 +390,22 @@ TOOLS_REGISTRY: dict[str, dict] = {
         input_schema={
             "type": "object",
             "properties": {
-                "target": {"type": "string", "description": "Branch or commit to checkout."},
-                "force": {"type": "boolean", "description": "Whether to force checkout."},
-                "repo_path": {"type": "string", "description": "Path to git repository (default: cwd)."},
-                "confirmation_id": {"type": "string", "description": "Confirmation ID from previous input_required response."},
+                "target": {
+                    "type": "string",
+                    "description": "Branch or commit to checkout.",
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "Whether to force checkout.",
+                },
+                "repo_path": {
+                    "type": "string",
+                    "description": "Path to git repository (default: cwd).",
+                },
+                "confirmation_id": {
+                    "type": "string",
+                    "description": "Confirmation ID from previous input_required response.",
+                },
             },
             "required": ["target"],
         },
@@ -312,9 +430,15 @@ TOOLS_REGISTRY: dict[str, dict] = {
         input_schema={
             "type": "object",
             "properties": {
-                "repo_path": {"type": "string", "description": "Path to git repository (default: cwd)."},
+                "repo_path": {
+                    "type": "string",
+                    "description": "Path to git repository (default: cwd).",
+                },
                 "message": {"type": "string", "description": "Custom stash message."},
-                "operation": {"type": "string", "description": "Name of operation triggering stash."},
+                "operation": {
+                    "type": "string",
+                    "description": "Name of operation triggering stash.",
+                },
             },
         },
         data_schema={
@@ -331,7 +455,7 @@ TOOLS_REGISTRY: dict[str, dict] = {
             "required": ["stashed"],
         },
         read_only=False,
-        destructive=False,
+        destructive=True,
         idempotent=False,
     ),
     "detect_stale_branches": _tool_entry(
@@ -341,9 +465,18 @@ TOOLS_REGISTRY: dict[str, dict] = {
         input_schema={
             "type": "object",
             "properties": {
-                "repo_path": {"type": "string", "description": "Path to git repository (default: cwd)."},
-                "days_inactive": {"type": "integer", "description": "Days of inactivity threshold (default: 30)."},
-                "include_remote": {"type": "boolean", "description": "Include remote tracking branches."},
+                "repo_path": {
+                    "type": "string",
+                    "description": "Path to git repository (default: cwd).",
+                },
+                "days_inactive": {
+                    "type": "integer",
+                    "description": "Days of inactivity threshold (default: 30).",
+                },
+                "include_remote": {
+                    "type": "boolean",
+                    "description": "Include remote tracking branches.",
+                },
             },
         },
         data_schema={
@@ -355,7 +488,13 @@ TOOLS_REGISTRY: dict[str, dict] = {
                 "inactive_remote": {"type": "array"},
                 "summary": {"type": "string"},
             },
-            "required": ["current_branch", "merged_branches", "inactive_local", "inactive_remote", "summary"],
+            "required": [
+                "current_branch",
+                "merged_branches",
+                "inactive_local",
+                "inactive_remote",
+                "summary",
+            ],
         },
         read_only=True,
         destructive=False,
@@ -368,8 +507,14 @@ TOOLS_REGISTRY: dict[str, dict] = {
         input_schema={
             "type": "object",
             "properties": {
-                "repo_path": {"type": "string", "description": "Path to git repository (default: cwd)."},
-                "execute": {"type": "boolean", "description": "Actually create commit (default: false)."},
+                "repo_path": {
+                    "type": "string",
+                    "description": "Path to git repository (default: cwd).",
+                },
+                "execute": {
+                    "type": "boolean",
+                    "description": "Actually create commit (default: false).",
+                },
             },
         },
         data_schema={
@@ -398,10 +543,22 @@ TOOLS_REGISTRY: dict[str, dict] = {
         input_schema={
             "type": "object",
             "properties": {
-                "since": {"type": "string", "description": "Start of time range (e.g. '7.days.ago')."},
-                "until": {"type": "string", "description": "End of time range (default: now)."},
-                "repo_path": {"type": "string", "description": "Path to git repository (default: cwd)."},
-                "author": {"type": "string", "description": "Filter by author name/email."},
+                "since": {
+                    "type": "string",
+                    "description": "Start of time range (e.g. '7.days.ago').",
+                },
+                "until": {
+                    "type": "string",
+                    "description": "End of time range (default: now).",
+                },
+                "repo_path": {
+                    "type": "string",
+                    "description": "Path to git repository (default: cwd).",
+                },
+                "author": {
+                    "type": "string",
+                    "description": "Filter by author name/email.",
+                },
             },
             "required": ["since"],
         },
@@ -419,8 +576,15 @@ TOOLS_REGISTRY: dict[str, dict] = {
                 "summary": {"type": "string"},
             },
             "required": [
-                "range", "total_commits", "total_additions", "total_deletions",
-                "net_lines", "top_files", "commits_by_day", "avg_commits_per_day", "summary"
+                "range",
+                "total_commits",
+                "total_additions",
+                "total_deletions",
+                "net_lines",
+                "top_files",
+                "commits_by_day",
+                "avg_commits_per_day",
+                "summary",
             ],
         },
         read_only=True,
@@ -434,9 +598,18 @@ TOOLS_REGISTRY: dict[str, dict] = {
         input_schema={
             "type": "object",
             "properties": {
-                "target_branch": {"type": "string", "description": "Branch to merge into (default: main)."},
-                "source_branch": {"type": "string", "description": "Branch to merge from."},
-                "repo_path": {"type": "string", "description": "Path to git repository (default: cwd)."},
+                "target_branch": {
+                    "type": "string",
+                    "description": "Branch to merge into (default: main).",
+                },
+                "source_branch": {
+                    "type": "string",
+                    "description": "Branch to merge from.",
+                },
+                "repo_path": {
+                    "type": "string",
+                    "description": "Path to git repository (default: cwd).",
+                },
             },
         },
         data_schema={
@@ -466,9 +639,18 @@ TOOLS_REGISTRY: dict[str, dict] = {
         input_schema={
             "type": "object",
             "properties": {
-                "time_range": {"type": "string", "description": "Time range for snapshot (e.g. 'last 45m', '1.hour.ago')."},
-                "repo_path": {"type": "string", "description": "Path to git repository (default: cwd)."},
-                "granularity": {"type": "string", "description": "Level of detail for snapshot."},
+                "time_range": {
+                    "type": "string",
+                    "description": "Time range for snapshot (e.g. 'last 45m', '1.hour.ago').",
+                },
+                "repo_path": {
+                    "type": "string",
+                    "description": "Path to git repository (default: cwd).",
+                },
+                "granularity": {
+                    "type": "string",
+                    "description": "Level of detail for snapshot.",
+                },
             },
             "required": ["time_range"],
         },
@@ -484,7 +666,15 @@ TOOLS_REGISTRY: dict[str, dict] = {
                 "summary": {"type": "string"},
                 "_meta": {"type": "object"},
             },
-            "required": ["range", "repo_path", "granularity", "git_timeline", "working_dir_delta", "dev_activity", "summary"],
+            "required": [
+                "range",
+                "repo_path",
+                "granularity",
+                "git_timeline",
+                "working_dir_delta",
+                "dev_activity",
+                "summary",
+            ],
         },
         read_only=True,
         destructive=False,
@@ -499,8 +689,14 @@ TOOLS_REGISTRY: dict[str, dict] = {
             "properties": {
                 "ref1": {"type": "string", "description": "First reference point."},
                 "ref2": {"type": "string", "description": "Second reference point."},
-                "repo_path": {"type": "string", "description": "Path to git repository (default: cwd)."},
-                "include_diff_content": {"type": "boolean", "description": "Include full diff content."},
+                "repo_path": {
+                    "type": "string",
+                    "description": "Path to git repository (default: cwd).",
+                },
+                "include_diff_content": {
+                    "type": "boolean",
+                    "description": "Include full diff content.",
+                },
             },
             "required": ["ref1", "ref2"],
         },

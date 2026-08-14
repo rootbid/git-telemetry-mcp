@@ -28,5 +28,14 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-groups
 
+      - name: Run Ruff
+        run: uv run ruff check .
+
+      - name: Run Mypy
+        run: uv run mypy git_telemetry_mcp
+
+      - name: Build package
+        run: uv build
+
       - name: Run Pytest
         run: uv run pytest

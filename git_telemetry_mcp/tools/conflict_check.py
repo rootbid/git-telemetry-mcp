@@ -1,9 +1,8 @@
 """conflict_prelim_check — dry-run merge to detect conflicts early."""
 
 import asyncio
-import json
-from git_telemetry_mcp.schema import serialize_telemetry_payload
 
+from git_telemetry_mcp.schema import serialize_telemetry_payload
 
 
 async def conflict_prelim_check(arguments: dict) -> str:
@@ -21,35 +20,66 @@ async def conflict_prelim_check(arguments: dict) -> str:
         source_branch = out.decode().strip()
 
     # Find merge base
-    merge_base_cmd = ["git", "-C", repo_path, "merge-base", source_branch, target_branch]
+    merge_base_cmd = [
+        "git",
+        "-C",
+        repo_path,
+        "merge-base",
+        source_branch,
+        target_branch,
+    ]
     proc = await asyncio.create_subprocess_exec(
         *merge_base_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
     base_out, base_err = await proc.communicate()
 
     if proc.returncode != 0:
-        return serialize_telemetry_payload({
-            "error": f"Cannot find merge base between {source_branch} and {target_branch}",
-            "detail": base_err.decode().strip(),
-        }, repo_path=repo_path, confidence_score=0.0)
-
+        return serialize_telemetry_payload(
+            {
+                "error": f"Cannot find merge base between {source_branch} and {target_branch}",
+                "detail": base_err.decode().strip(),
+            },
+            repo_path=repo_path,
+            confidence_score=0.0,
+        )
 
     merge_base = base_out.decode().strip()
 
-    # Try merge without committing (dry-run via merge-tree)
+    # Three-tree merge-tree emits conflict stages without touching the index
+    # or writing a result tree.  Do not use --write-tree in this read-only tool.
     merge_tree_cmd = [
-        "git", "-C", repo_path, "merge-tree", "--write-tree",
-        "--no-messages", merge_base, source_branch, target_branch,
+        "git",
+        "-C",
+        repo_path,
+        "merge-tree",
+        merge_base,
+        source_branch,
+        target_branch,
     ]
     proc = await asyncio.create_subprocess_exec(
         *merge_tree_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
-    tree_out, tree_err = await proc.communicate()
-    has_conflicts = proc.returncode != 0
+    tree_out, _tree_err = await proc.communicate()
+    tree_text = tree_out.decode()
+    conflict_markers = (
+        "changed in both",
+        "added in both",
+        "removed in both",
+        "deleted in both",
+        "unmerged",
+        "conflict",
+    )
+    has_conflicts = proc.returncode != 0 or any(
+        marker in tree_text.lower() for marker in conflict_markers
+    )
 
     # Get files that differ between branches
     diff_files_cmd = [
-        "git", "-C", repo_path, "diff", "--name-only",
+        "git",
+        "-C",
+        repo_path,
+        "diff",
+        "--name-only",
         f"{target_branch}...{source_branch}",
     ]
     diff_proc = await asyncio.create_subprocess_exec(
@@ -58,16 +88,36 @@ async def conflict_prelim_check(arguments: dict) -> str:
     diff_out, _ = await diff_proc.communicate()
     changed_files = diff_out.decode().strip().splitlines()
 
-    # Parse conflict info from merge-tree output
+    # Parse conflict info from merge-tree output without exposing duplicate paths.
     conflicting_files = []
     if has_conflicts:
-        for line in tree_out.decode().splitlines():
-            if line and not line.startswith(" ") and "/" in line:
-                conflicting_files.append(line.strip())
+        for line in tree_text.splitlines():
+            stripped = line.strip()
+            if stripped.lower().startswith("conflict") and " in " in stripped.lower():
+                conflicting_files.append(stripped.rsplit(" in ", 1)[-1])
+            elif stripped.startswith(("base ", "our ", "their ")):
+                fields = stripped.split()
+                if len(fields) >= 4:
+                    conflicting_files.append(" ".join(fields[3:]))
+        conflicting_files = list(dict.fromkeys(conflicting_files))
 
     # Commits ahead/behind
-    ahead_cmd = ["git", "-C", repo_path, "rev-list", "--count", f"{target_branch}..{source_branch}"]
-    behind_cmd = ["git", "-C", repo_path, "rev-list", "--count", f"{source_branch}..{target_branch}"]
+    ahead_cmd = [
+        "git",
+        "-C",
+        repo_path,
+        "rev-list",
+        "--count",
+        f"{target_branch}..{source_branch}",
+    ]
+    behind_cmd = [
+        "git",
+        "-C",
+        repo_path,
+        "rev-list",
+        "--count",
+        f"{source_branch}..{target_branch}",
+    ]
 
     ahead_proc, behind_proc = await asyncio.gather(
         asyncio.create_subprocess_exec(
