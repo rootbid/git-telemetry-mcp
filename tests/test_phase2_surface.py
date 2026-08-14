@@ -2,6 +2,8 @@
 
 import json
 
+from urllib.parse import quote
+
 import pytest
 
 from git_telemetry_mcp.server import (
@@ -121,3 +123,68 @@ async def test_dispatch_routes_resources_and_prompts():
     )
     assert resource_response["result"]["resources"]
     assert prompt_response["result"]["prompts"]
+
+@pytest.mark.asyncio
+async def test_resources_read_rejects_non_git_worktree(tmp_path):
+    result = await _handle_resources_read(
+        {"uri": "telemetry://session/current", "repo_path": str(tmp_path)}
+    )
+    assert result["isError"] is True
+    assert "repo_path" in result["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_prompts_get_rejects_non_git_worktree(tmp_path):
+    result = await _handle_prompts_get(
+        {
+            "name": "handover_notes",
+            "arguments": {"repo_path": str(tmp_path)},
+        }
+    )
+    assert result["isError"] is True
+    assert "repo_path" in result["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_resource_uri_query_selects_repo_path(temp_git_repo, monkeypatch):
+    from git_telemetry_mcp import server
+
+    seen = {}
+
+    async def fake_timeline(arguments):
+        seen.update(arguments)
+        return server.serialize_telemetry_payload(
+            {"selected": True}, repo_path=arguments["repo_path"]
+        )
+
+    monkeypatch.setattr(server, "get_session_timeline", fake_timeline)
+    uri = "telemetry://session/current?repo_path=" + quote(str(temp_git_repo))
+    result = await _handle_resources_read({"uri": uri})
+
+    assert "contents" in result
+    assert seen["repo_path"] == str(temp_git_repo)
+    assert result["contents"][0]["uri"] == uri
+
+
+@pytest.mark.asyncio
+async def test_oversized_resource_is_bounded_with_truncated_preview(
+    temp_git_repo, monkeypatch
+):
+    from git_telemetry_mcp import server
+
+    async def huge_timeline(arguments):
+        return server.serialize_telemetry_payload(
+            {"output": "é" * 100_000}, repo_path=arguments["repo_path"]
+        )
+
+    monkeypatch.setattr(server, "get_session_timeline", huge_timeline)
+    result = await _handle_resources_read(
+        {"uri": "telemetry://session/current", "repo_path": str(temp_git_repo)}
+    )
+
+    text = result["contents"][0]["text"]
+    assert len(text.encode("utf-8")) <= 100_000
+    payload = json.loads(text)
+    assert payload["data"]["truncated"] is True
+    assert isinstance(payload["data"]["preview"], str)
+    assert payload["data"]["original_bytes"] > 100_000

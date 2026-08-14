@@ -3,6 +3,7 @@
 import asyncio
 import json
 import uuid
+from urllib.parse import parse_qs, urlsplit
 from typing import Any
 
 import uvicorn
@@ -22,6 +23,7 @@ from git_telemetry_mcp.tools.working_dir_delta import working_dir_delta
 MCP_PROTOCOL_VERSION = "2026-07-28"
 SERVER_INFO = {"name": "git-telemetry-mcp", "version": "0.1.1"}
 TOOLS_LIST_TTL_MS = 600_000
+RESOURCE_MAX_BYTES = 100_000
 
 # Resources are intentionally stable URIs; clients may select a repository using
 # the optional ``repo_path`` request parameter, like existing tool arguments.
@@ -103,9 +105,96 @@ def _method_error(message: str) -> dict:
     return {"content": [{"type": "text", "text": message}], "isError": True}
 
 
-def _resource_content(uri: str, text: str, mime_type: str) -> dict:
+def _serialized_size(text: str) -> int:
+    return len(text.encode("utf-8"))
+
+
+def _bounded_resource_text(serialized: str, repo_path: str) -> str:
+    """Keep a serialized resource within the MCP response size budget."""
+    original_bytes = _serialized_size(serialized)
+    if original_bytes <= RESOURCE_MAX_BYTES:
+        return serialized
+
+    data, confidence = _payload_parts(serialized)
+    preview = json.dumps(data, ensure_ascii=False, indent=2)
+
+    def render(preview_length: int) -> str:
+        return serialize_telemetry_payload(
+            {
+                "truncated": True,
+                "preview": preview[:preview_length],
+                "original_bytes": original_bytes,
+            },
+            repo_path=repo_path,
+            confidence_score=confidence,
+        )
+
+    # Find the largest UTF-8-safe preview that still fits after serialization.
+    low, high = 0, len(preview)
+    bounded = render(0)
+    while low <= high:
+        midpoint = (low + high) // 2
+        candidate = render(midpoint)
+        if _serialized_size(candidate) <= RESOURCE_MAX_BYTES:
+            bounded = candidate
+            low = midpoint + 1
+        else:
+            high = midpoint - 1
+    return bounded
+
+
+def _resource_content(
+    uri: str, text: str, mime_type: str, repo_path: str = "."
+) -> dict:
     """Build the MCP resources/read ``contents`` item for a text resource."""
-    return {"contents": [{"uri": uri, "mimeType": mime_type, "text": text}]}
+    return {
+        "contents": [
+            {
+                "uri": uri,
+                "mimeType": mime_type,
+                "text": _bounded_resource_text(text, repo_path),
+            }
+        ]
+    }
+
+
+async def _validate_repo_path(repo_path: Any) -> str | None:
+    """Return an error when ``repo_path`` is not an existing Git worktree."""
+    if not isinstance(repo_path, str) or not repo_path.strip():
+        return "Invalid repo_path: expected a non-empty path to a Git worktree"
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "-C",
+            repo_path,
+            "rev-parse",
+            "--is-inside-work-tree",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+    except (OSError, ValueError) as exc:
+        return f"Invalid repo_path {repo_path!r}: {exc}"
+
+    if proc.returncode != 0 or stdout.decode(errors="replace").strip().lower() != "true":
+        detail = stderr.decode(errors="replace").strip()
+        suffix = f" ({detail})" if detail else ""
+        return f"Invalid repo_path {repo_path!r}: not an existing Git worktree{suffix}"
+    return None
+
+
+def _resource_uri_parts(uri: Any) -> tuple[str, str | None]:
+    """Return a listed base URI and an optional query-selected repository."""
+    if not isinstance(uri, str):
+        return "", None
+    try:
+        parsed = urlsplit(uri)
+        base_uri = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+        query = parse_qs(parsed.query, keep_blank_values=True)
+    except ValueError:
+        return uri, None
+    repo_values = query.get("repo_path")
+    return base_uri, repo_values[0] if repo_values else None
 
 
 def _payload_parts(serialized: str) -> tuple[Any, float]:
@@ -172,19 +261,31 @@ async def _latest_commit_delta(repo_path: str) -> dict:
 
 async def _handle_resources_read(params: dict) -> dict:
     params = params or {}
-    uri = params.get("uri", "")
-    repo_path = params.get("repo_path", ".")
-    resource = next((entry for entry in RESOURCE_DEFINITIONS if entry["uri"] == uri), None)
+    requested_uri = params.get("uri", "")
+    base_uri, query_repo_path = _resource_uri_parts(requested_uri)
+    resource = next(
+        (entry for entry in RESOURCE_DEFINITIONS if entry["uri"] == base_uri), None
+    )
     if resource is None:
-        return _method_error(f"Unknown resource: {uri}")
+        return _method_error(f"Unknown resource: {requested_uri}")
 
-    if uri == "telemetry://session/current":
+    repo_path = query_repo_path if query_repo_path is not None else params.get("repo_path", ".")
+    validation_error = await _validate_repo_path(repo_path)
+    if validation_error:
+        return _method_error(validation_error)
+
+    if base_uri == "telemetry://session/current":
         serialized = await get_session_timeline(
             {"since": "4 hours ago", "until": "now", "repo_path": repo_path}
         )
-        return _resource_content(uri, _repack_payload(serialized, repo_path), resource["mimeType"])
+        return _resource_content(
+            requested_uri,
+            _repack_payload(serialized, repo_path),
+            resource["mimeType"],
+            repo_path,
+        )
 
-    if uri == "telemetry://history/standup":
+    if base_uri == "telemetry://history/standup":
         serialized = await get_session_timeline(
             {"since": "24 hours ago", "until": "now", "repo_path": repo_path}
         )
@@ -204,13 +305,19 @@ async def _handle_resources_read(params: dict) -> dict:
             markdown += "\n\n## Recent activity\n" + "\n".join(event_lines)
         data = {"format": "markdown", "content": markdown, "source": "get_session_timeline"}
         return _resource_content(
-            uri,
+            requested_uri,
             serialize_telemetry_payload(data, repo_path=repo_path, confidence_score=confidence),
             resource["mimeType"],
+            repo_path,
         )
 
     delta = await _latest_commit_delta(repo_path)
-    return _resource_content(uri, serialize_telemetry_payload(delta, repo_path=repo_path), resource["mimeType"])
+    return _resource_content(
+        requested_uri,
+        serialize_telemetry_payload(delta, repo_path=repo_path),
+        resource["mimeType"],
+        repo_path,
+    )
 
 
 async def _handle_prompts_list(params: dict) -> dict:
@@ -224,7 +331,12 @@ async def _handle_prompts_get(params: dict) -> dict:
     if definition is None:
         return _method_error(f"Unknown prompt: {name}")
     arguments = params.get("arguments") or {}
+    if not isinstance(arguments, dict):
+        return _method_error("Invalid prompt arguments: expected an object")
     repo_path = arguments.get("repo_path", ".")
+    validation_error = await _validate_repo_path(repo_path)
+    if validation_error:
+        return _method_error(validation_error)
 
     if name == "review_debug_loop":
         context = _repack_payload(await get_active_context_pack({"repo_path": repo_path}), repo_path)
