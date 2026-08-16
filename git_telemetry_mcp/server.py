@@ -26,7 +26,7 @@ from git_telemetry_mcp.tools.smart_commit import generate_smart_commit
 from git_telemetry_mcp.tools.working_dir_delta import working_dir_delta
 
 MCP_PROTOCOL_VERSION = "2026-07-28"
-SERVER_INFO = {"name": "git-telemetry-mcp", "version": "0.1.1"}
+SERVER_INFO = {"name": "git-telemetry-mcp", "version": "0.1.2"}
 TOOLS_LIST_TTL_MS = 600_000
 RESOURCE_MAX_BYTES = 100_000
 DEFAULT_REQUEST_MAX_BYTES = 1_000_000
