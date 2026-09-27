@@ -7,9 +7,10 @@ identifier so the history remains auditable against Git.
 
 No changes yet.
 
-## [0.1.2] — 2026-09-27
+## [0.1.3] — 2026-09-27
 
-Released from the completed temporal-engine rebuild and Phase 2 hardening work.
+Released after reconciling the temporal-engine rebuild and Phase 2 hardening
+onto the remote v0.1.2 mainline.
 
 ### Temporal engine rebuild
 
@@ -51,10 +52,9 @@ Released from the completed temporal-engine rebuild and Phase 2 hardening work.
 - `010b5ac` — Added MCP Registry publishing workflow and package metadata,
   including the published server schema and registry manifest.
 
-## Post-0.1.1 development
+## Development between v0.1.1 and v0.1.3
 
-These commits are present on `main` after the `v0.1.1` tag and are included in
-`Unreleased` above.
+These commits are included in the v0.1.3 release.
 
 - `0abbc16` — Fixed MCP Registry publishing metadata and README references.
 - `3a77fd5` — Added the Phase 1 temporal engine: fuzzy ranges, sessions, and
@@ -98,9 +98,11 @@ These commits are present on `main` after the `v0.1.1` tag and are included in
 
 - `v0.1.0` → `cd67ded`
 - `v0.1.1` → `010b5ac`
-- `v0.1.2` → release commit created from this tree
+- `v0.1.2` → `04b9704`
+- `v0.1.3` → release commit created from this tree
 
-[Unreleased]: https://github.com/rootbid/git-telemetry-mcp/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/rootbid/git-telemetry-mcp/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/rootbid/git-telemetry-mcp/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/rootbid/git-telemetry-mcp/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/rootbid/git-telemetry-mcp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/rootbid/git-telemetry-mcp/releases/tag/v0.1.0

@@ -392,6 +392,7 @@ Supported request methods are `initialize`, `tools/list`, `tools/call`,
 including completion, sampling, logging, and resource subscriptions, are not
 implemented and receive JSON-RPC `-32601` (`Method not found`). HTTP requests
 are stateless; SSE provides only a bounded in-memory response queue.
+
 #### Resources
 
 `resources/list` exposes these stable resources:

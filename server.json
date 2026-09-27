@@ -3,12 +3,12 @@
   "name": "io.github.rootbid/git-telemetry-mcp",
   "title": "Git Telemetry MCP Server",
   "description": "MCP server exposing git reflog, working directory, and bash history as temporal context tools",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "git-telemetry-mcp",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "transport": {
         "type": "sse",
         "url": "http://127.0.0.1:8787/sse"
