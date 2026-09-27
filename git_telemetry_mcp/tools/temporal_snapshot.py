@@ -57,8 +57,15 @@ async def get_temporal_snapshot(arguments: dict) -> str:
     # timestamps; the bounded cache TTL limits freshness while allowing consecutive
     # identical requests to hit even when resolution crosses a second boundary.
     dynamic_window = resolved["resolved_from"] in {
-        "relative_duration", "colloquial", "git_native", "fallback",
-        "reflog_ordinal", "reflog_ordinal_unresolved",
+        "relative_duration",
+        "colloquial",
+        "git_native_normalized",
+        "fallback",
+        "reflog_ordinal",
+        "reflog_ordinal_unresolved",
+        "commit_ordinal",
+        "git_revision",
+        "absolute_now",
     }
     key = make_cache_key(
         repo_path,
@@ -93,6 +100,8 @@ async def get_temporal_snapshot(arguments: dict) -> str:
             "since": since,
             "until": until,
             "resolved_from": resolved["resolved_from"],
+            "confidence": resolved["confidence"],
+            "anchor": resolved.get("anchor"),
         },
         "repo_path": repo_path,
         "granularity": granularity,

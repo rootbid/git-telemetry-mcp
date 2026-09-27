@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from git_telemetry_mcp.schema import serialize_telemetry_payload
+from git_telemetry_mcp.temporal import resolve_time_bounds
 
 DEFAULT_MAX_HISTORY_BYTES = 1_000_000
 MAX_HISTORY_BYTES = DEFAULT_MAX_HISTORY_BYTES
@@ -163,58 +164,28 @@ def _parse_bash_history(
 async def _git_timestamps(
     repo_path: str, since: str, until: str
 ) -> tuple[float, float]:
-    """Use git to resolve relative time expressions to unix timestamps."""
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        "-C",
-        repo_path,
-        "log",
-        "--format=%ct",
-        f"--since={since}",
-        f"--until={until}",
-        "-1",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    await proc.communicate()
-
-    since_proc = await asyncio.create_subprocess_exec(
-        "date",
-        "--date",
-        since.replace(".", " ").replace("ago", "ago"),
-        "+%s",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    since_out, _ = await since_proc.communicate()
-
-    until_proc = await asyncio.create_subprocess_exec(
-        "date",
-        "--date",
-        until.replace(".", " ") if until != "now" else "now",
-        "+%s",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    until_out, _ = await until_proc.communicate()
-
+    """Convert already-normalized ISO bounds to epoch seconds."""
+    del repo_path
     try:
-        since_ts = float(since_out.decode().strip())
-    except ValueError:
+        since_ts = datetime.fromisoformat(since).timestamp()
+    except (TypeError, ValueError):
         since_ts = datetime.now(tz=UTC).timestamp() - 3600
-
     try:
-        until_ts = float(until_out.decode().strip())
-    except ValueError:
+        until_ts = datetime.fromisoformat(until).timestamp()
+    except (TypeError, ValueError):
         until_ts = datetime.now(tz=UTC).timestamp()
-
     return since_ts, until_ts
 
 
 async def dev_activity(arguments: dict) -> str:
-    since = arguments["since"]
-    until = arguments.get("until", "now")
+    since_input = arguments["since"]
+    until_input = arguments.get("until")
     repo_path = arguments.get("repo_path", ".")
+    resolved = await resolve_time_bounds(
+        since_input, until_input, repo_path=repo_path
+    )
+    since = resolved["since"]
+    until = resolved["until"]
     requested_history = "shell_history_path" in arguments
 
     history_file: Path | None = None

@@ -1,65 +1,10 @@
 """git_timeline — reflog + commit analysis over a time range."""
 
-import asyncio
 import re
 from datetime import UTC, datetime, timedelta
 
 from git_telemetry_mcp.schema import serialize_telemetry_payload
-
-
-async def _git_timestamps(
-    repo_path: str, since: str, until: str
-) -> tuple[float, float]:
-    """Use git to resolve relative time expressions to unix timestamps."""
-    # NOTE: This function is duplicated from dev_activity.py. Consider refactoring to a common utility.
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        "-C",
-        repo_path,
-        "log",
-        "--format=%ct",
-        f"--since={since}",
-        f"--until={until}",
-        "-1",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    await proc.communicate()  # We only care about the return code here, not the output
-
-    # Use 'date' command to reliably parse relative time strings to epoch timestamps
-    since_proc = await asyncio.create_subprocess_exec(
-        "date",
-        "--date",
-        since.replace(".", " ").replace("ago", "ago"),
-        "+%s",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    since_out, _ = await since_proc.communicate()
-
-    until_proc = await asyncio.create_subprocess_exec(
-        "date",
-        "--date",
-        until.replace(".", " ") if until != "now" else "now",
-        "+%s",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    until_out, _ = await until_proc.communicate()
-
-    try:
-        since_ts = float(since_out.decode().strip())
-    except ValueError:
-        # Default to 1 hour ago if 'since' parsing fails
-        since_ts = datetime.now(tz=UTC).timestamp() - 3600
-
-    try:
-        until_ts = float(until_out.decode().strip())
-    except ValueError:
-        # Default to now if 'until' parsing fails
-        until_ts = datetime.now(tz=UTC).timestamp()
-
-    return since_ts, until_ts
+from git_telemetry_mcp.temporal import GitTemporalProvider, resolve_time_bounds
 
 
 def _parse_reflog_entry(entry_line: str) -> dict:
@@ -121,89 +66,75 @@ def _parse_reflog_entry(entry_line: str) -> dict:
 
 
 async def git_timeline(arguments: dict) -> str:
-    since = arguments["since"]
-    until = arguments.get("until", "now")
+    since_input = arguments["since"]
+    until_input = arguments.get("until")
     repo_path = arguments.get("repo_path", ".")
+    resolved = await resolve_time_bounds(
+        since_input, until_input, repo_path=repo_path
+    )
+    since = resolved["since"]
+    until = resolved["until"]
+    since_dt = datetime.fromisoformat(since)
+    until_dt = datetime.fromisoformat(until)
+    provider = GitTemporalProvider(repo_path)
+    indexed_events = await provider.events()
 
-    since_ts, _until_ts = await _git_timestamps(
-        repo_path, since, until
-    )  # Get numeric timestamps
+    def in_window(event: dict) -> bool:
+        event_dt = datetime.fromisoformat(event["timestamp"])
+        return since_dt <= event_dt <= until_dt
+
+    selected = [event for event in indexed_events if in_window(event)]
+    reflog_entries = [
+        {
+            "sha": event.get("sha", "")[:8],
+            "reflog_selector": event.get("selector"),
+            "raw_action_message": event.get("message", ""),
+            "date": event["date"],
+            "action_type": event.get("action", "unknown"),
+            "reason_detail": event.get("message", ""),
+            "branch_before": None,
+            "branch_after": event.get("branch"),
+        }
+        for event in selected
+        if event["type"] == "reflog"
+    ]
+    commits = [
+        {
+            "sha": event.get("sha", "")[:8],
+            "author": event.get("author", ""),
+            "message": event.get("message", ""),
+            "date": event["date"],
+        }
+        for event in selected
+        if event["type"] == "commit"
+    ]
 
     # Calculate reflog expiration threshold (default: 30 days)
     reflog_expiration_threshold = datetime.now(tz=UTC) - timedelta(days=30)
     reflog_warning = None
-    if since_ts < reflog_expiration_threshold.timestamp():
+    if since_dt.timestamp() < reflog_expiration_threshold.timestamp():
         reflog_warning = (
             f"The 'since' date ({since}) is older than the typical Git reflog "
-            f"expiration period (30 days). Reflog data for this range may be incomplete; "
-            f"relying primarily on git log for older history."
+            "expiration period (30 days). Reflog data for this range may be incomplete; "
+            "relying primarily on git log for older history."
         )
 
-    reflog_cmd = [
-        "git",
-        "-C",
-        repo_path,
-        "reflog",
-        "--format=%H|%gd|%gs|%ci",
-        f"--since={since}",
-        f"--until={until}",
-    ]
-    log_cmd = [
-        "git",
-        "-C",
-        repo_path,
-        "log",
-        "--all",
-        "--format=%H|%an|%s|%ci",
-        f"--since={since}",
-        f"--until={until}",
-    ]
-
-    reflog_proc, log_proc = await asyncio.gather(
-        asyncio.create_subprocess_exec(
-            *reflog_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        ),
-        asyncio.create_subprocess_exec(
-            *log_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        ),
-    )
-
-    reflog_out, _ = await reflog_proc.communicate()
-    log_out, _ = await log_proc.communicate()
-
-    reflog_entries = []
-    for line in reflog_out.decode().strip().splitlines():
-        if not line:
-            continue
-        parsed_entry = _parse_reflog_entry(line)
-        if parsed_entry:
-            reflog_entries.append(parsed_entry)
-
-    commits = []
-    for line in log_out.decode().strip().splitlines():
-        if not line:
-            continue
-        parts = line.split("|", 3)
-        if len(parts) == 4:
-            commits.append(
-                {
-                    "sha": parts[0][:8],
-                    "author": parts[1],
-                    "message": parts[2],
-                    "date": parts[3],
-                }
-            )
-
     result = {
-        "range": {"since": since, "until": until},
+        "range": {
+            "since": since,
+            "until": until,
+            "resolved_from": resolved["resolved_from"],
+            "confidence": resolved["confidence"],
+            "anchor": resolved.get("anchor"),
+        },
         "reflog": reflog_entries,
         "commits": commits,
         "summary": f"{len(reflog_entries)} reflog entries, {len(commits)} commits",
     }
-    confidence = 1.0
+    confidence = float(resolved["confidence"])
     if reflog_warning:
         result["reflog_warning"] = reflog_warning
-        confidence = 0.8
+        confidence = min(confidence, 0.8)
     return serialize_telemetry_payload(
         result, repo_path=repo_path, confidence_score=confidence
     )

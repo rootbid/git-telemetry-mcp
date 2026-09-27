@@ -19,6 +19,7 @@ from starlette.routing import Route
 from git_telemetry_mcp.privacy import scrub_data, scrub_text
 from git_telemetry_mcp.process import run_git, validate_repo_path
 from git_telemetry_mcp.schema import serialize_telemetry_payload
+from git_telemetry_mcp.temporal import resolve_time_range
 from git_telemetry_mcp.tools import TOOLS_REGISTRY
 from git_telemetry_mcp.tools.active_context_pack import get_active_context_pack
 from git_telemetry_mcp.tools.session_timeline import get_session_timeline
@@ -141,8 +142,12 @@ def _input_required_result(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def _untrusted_git_data(label: str, text: str) -> str:
-    """Delimit and scrub Git-controlled text before placing it in a prompt."""
+    """Delimit scrubbed Git text while preventing delimiter breakout."""
     safe = scrub_text(text, include_paths=True)
+    # Git-controlled text can contain arbitrary bytes, including our closing
+    # marker. Encode angle brackets in the payload so only server-owned
+    # delimiters remain syntactically meaningful to downstream models.
+    safe = safe.replace("<", r"\u003c")
     return f"<<<BEGIN UNTRUSTED GIT DATA: {label}>>>\n{safe}\n<<<END UNTRUSTED GIT DATA: {label}>>>"
 
 
@@ -217,9 +222,29 @@ def _resource_uri_parts(uri: Any) -> tuple[str, str | None]:
         base_uri = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
         query = parse_qs(parsed.query, keep_blank_values=True)
     except ValueError:
-        return uri, None
+        return "", None
     repo_values = query.get("repo_path")
     return base_uri, repo_values[0] if repo_values else None
+
+
+async def _resource_timeline(repo_path: str, expression: str) -> str:
+    """Resolve a Phase 2 window through the shared Phase 1 temporal engine."""
+    window = await resolve_time_range(expression, repo_path=repo_path)
+    serialized = await get_session_timeline(
+        {
+            "since": window["since"],
+            "until": window["until"],
+            "repo_path": repo_path,
+        }
+    )
+    data, confidence = _payload_parts(serialized)
+    try:
+        confidence = min(confidence, float(window.get("confidence", 1.0)))
+    except (TypeError, ValueError):
+        pass
+    return serialize_telemetry_payload(
+        data, repo_path=repo_path, confidence_score=confidence
+    )
 
 
 def _payload_parts(serialized: str) -> tuple[Any, float]:
@@ -287,14 +312,17 @@ async def _latest_commit_delta(repo_path: str) -> dict:
 
 
 async def _handle_resources_read(params: dict) -> dict:
-    params = params or {}
+    if params is None:
+        params = {}
+    if not isinstance(params, dict):
+        return _method_error("Invalid resources/read params: expected an object")
     requested_uri = params.get("uri", "")
     base_uri, query_repo_path = _resource_uri_parts(requested_uri)
     resource = next(
         (entry for entry in RESOURCE_DEFINITIONS if entry["uri"] == base_uri), None
     )
     if resource is None:
-        return _method_error(f"Unknown resource: {requested_uri}")
+        return _method_error("Unknown resource")
 
     repo_path = (
         query_repo_path if query_repo_path is not None else params.get("repo_path", ".")
@@ -304,20 +332,16 @@ async def _handle_resources_read(params: dict) -> dict:
         return _method_error(validation_error)
 
     if base_uri == "telemetry://session/current":
-        serialized = await get_session_timeline(
-            {"since": "4 hours ago", "until": "now", "repo_path": repo_path}
-        )
+        serialized = await _resource_timeline(repo_path, "last 4 hours")
         return _resource_content(
-            requested_uri,
-            _repack_payload(serialized, repo_path),
+            base_uri,
+            serialized,
             resource["mimeType"],
             repo_path,
         )
 
     if base_uri == "telemetry://history/standup":
-        serialized = await get_session_timeline(
-            {"since": "24 hours ago", "until": "now", "repo_path": repo_path}
-        )
+        serialized = await _resource_timeline(repo_path, "last 24 hours")
         timeline_data, confidence = _payload_parts(serialized)
         if isinstance(timeline_data, dict):
             summary = timeline_data.get("summary", "No recent activity")
@@ -338,7 +362,7 @@ async def _handle_resources_read(params: dict) -> dict:
             "source": "get_session_timeline",
         }
         return _resource_content(
-            requested_uri,
+            base_uri,
             serialize_telemetry_payload(
                 data, repo_path=repo_path, confidence_score=confidence
             ),
@@ -348,11 +372,12 @@ async def _handle_resources_read(params: dict) -> dict:
 
     delta = await _latest_commit_delta(repo_path)
     return _resource_content(
-        requested_uri,
+        base_uri,
         serialize_telemetry_payload(delta, repo_path=repo_path),
         resource["mimeType"],
         repo_path,
     )
+
 
 
 async def _handle_prompts_list(params: dict) -> dict:
@@ -360,14 +385,19 @@ async def _handle_prompts_list(params: dict) -> dict:
 
 
 async def _handle_prompts_get(params: dict) -> dict:
-    params = params or {}
+    if params is None:
+        params = {}
+    if not isinstance(params, dict):
+        return _method_error("Invalid prompts/get params: expected an object")
     name = params.get("name", "")
     definition = next(
         (prompt for prompt in PROMPT_DEFINITIONS if prompt["name"] == name), None
     )
     if definition is None:
         return _method_error(f"Unknown prompt: {name}")
-    arguments = params.get("arguments") or {}
+    arguments = params.get("arguments")
+    if arguments is None:
+        arguments = {}
     if not isinstance(arguments, dict):
         return _method_error("Invalid prompt arguments: expected an object")
     repo_path = arguments.get("repo_path", ".")

@@ -3,12 +3,18 @@
 import asyncio
 
 from git_telemetry_mcp.schema import serialize_telemetry_payload
+from git_telemetry_mcp.temporal import resolve_time_bounds
 
 
 async def get_developer_velocity(arguments: dict) -> str:
-    since = arguments["since"]
-    until = arguments.get("until", "now")
+    since_input = arguments["since"]
+    until_input = arguments.get("until")
     repo_path = arguments.get("repo_path", ".")
+    resolved = await resolve_time_bounds(
+        since_input, until_input, repo_path=repo_path
+    )
+    since = resolved["since"]
+    until = resolved["until"]
     author = arguments.get("author")
 
     # Commit count and frequency

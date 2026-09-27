@@ -12,6 +12,7 @@ from typing import Any
 
 from git_telemetry_mcp.schema import serialize_telemetry_payload
 from git_telemetry_mcp.sessions import segment_sessions, select_session
+from git_telemetry_mcp.temporal import GitTemporalProvider, resolve_time_bounds
 
 _MAX_TIMELINE_EVENTS = 1000
 
@@ -53,108 +54,32 @@ def _in_iso_window(value: str, since: str, until: str) -> bool:
 
 
 async def get_session_timeline(arguments: dict) -> str:
-    since = arguments["since"]
-    until = arguments.get("until", "now")
+    since_input = arguments["since"]
+    until_input = arguments.get("until")
     repo_path = arguments.get("repo_path", ".")
     requested_session = arguments.get("session")
-
-    reflog_cmd = [
-        "git",
-        "-C",
-        repo_path,
-        "reflog",
-        "-n",
-        str(_MAX_TIMELINE_EVENTS),
-        "--format=%H|%gd|%gs|%ci",
-        f"--since={since}",
-        f"--until={until}",
-    ]
-    log_cmd = [
-        "git",
-        "-C",
-        repo_path,
-        "log",
-        "--all",
-        "-n",
-        str(_MAX_TIMELINE_EVENTS),
-        "--format=%H|%an|%s|%ci",
-        f"--since={since}",
-        f"--until={until}",
-    ]
-    stash_cmd = [
-        "git",
-        "-C",
-        repo_path,
-        "stash",
-        "list",
-        "-n",
-        str(_MAX_TIMELINE_EVENTS),
-        "--format=%H|%s|%ci",
-        f"--since={since}",
-        f"--until={until}",
-    ]
-
-    reflog_proc, log_proc, stash_proc = await asyncio.gather(
-        asyncio.create_subprocess_exec(
-            *reflog_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        ),
-        asyncio.create_subprocess_exec(
-            *log_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        ),
-        asyncio.create_subprocess_exec(
-            *stash_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        ),
+    resolved = await resolve_time_bounds(
+        since_input, until_input, repo_path=repo_path
     )
-
-    reflog_out, _ = await reflog_proc.communicate()
-    log_out, _ = await log_proc.communicate()
-    stash_out, _ = await stash_proc.communicate()
-
+    since = resolved["since"]
+    until = resolved["until"]
+    provider = GitTemporalProvider(repo_path)
+    indexed_events = await provider.events()
     events: list[dict[str, Any]] = []
-
-    for line in reflog_out.decode(errors="replace").splitlines()[:_MAX_TIMELINE_EVENTS]:
-        if not line:
+    for source_event in indexed_events:
+        if not _in_iso_window(source_event["timestamp"], since, until):
             continue
-        parts = line.split("|", 3)
-        if len(parts) == 4:
-            events.append(
-                {
-                    "type": "reflog",
-                    "sha": parts[0][:8],
-                    "selector": parts[1],
-                    "action": parts[2],
-                    "date": _normalized_event_date(parts[3]),
-                }
-            )
+        event: dict[str, Any] = {
+            key: source_event[key]
+            for key in ("type", "sha", "message", "author", "date", "anchor", "selector", "action", "branch")
+            if key in source_event
+        }
+        events.append(event)
+    events = events[:_MAX_TIMELINE_EVENTS]
 
-    for line in log_out.decode(errors="replace").splitlines()[:_MAX_TIMELINE_EVENTS]:
-        if not line:
-            continue
-        parts = line.split("|", 3)
-        if len(parts) == 4:
-            events.append(
-                {
-                    "type": "commit",
-                    "sha": parts[0][:8],
-                    "author": parts[1],
-                    "message": parts[2],
-                    "date": _normalized_event_date(parts[3]),
-                }
-            )
-
-    for line in stash_out.decode(errors="replace").splitlines()[:_MAX_TIMELINE_EVENTS]:
-        if not line:
-            continue
-        parts = line.split("|", 2)
-        if len(parts) == 3 and _in_iso_window(parts[2], since, until):
-            events.append(
-                {
-                    "type": "stash",
-                    "sha": parts[0][:8],
-                    "message": parts[1],
-                    "date": _normalized_event_date(parts[2]),
-                }
-            )
+    # The provider already normalized and bounded reflog, commit, stash, and
+    # branch chronology into one stream. Keep filesystem mtimes as a separate
+    # best-effort signal because they are not Git chronology.
 
     # Recently modified files (by mtime)
     modified_files: list[tuple[str, float]] = []
@@ -205,7 +130,13 @@ async def get_session_timeline(arguments: dict) -> str:
     ]
 
     result: dict[str, Any] = {
-        "range": {"since": since, "until": until},
+        "range": {
+            "since": since,
+            "until": until,
+            "resolved_from": resolved["resolved_from"],
+            "confidence": resolved["confidence"],
+            "anchor": resolved.get("anchor"),
+        },
         "events": events[:50],
         "recently_modified_files": [fpath for fpath, _mtime in modified_files],
         "sessions": session_summaries,
@@ -217,7 +148,7 @@ async def get_session_timeline(arguments: dict) -> str:
         ),
     }
 
-    confidence = 1.0
+    confidence = float(resolved["confidence"])
     if requested_session is not None:
         selected = select_session(sessions, requested_session)
         if selected is not None:

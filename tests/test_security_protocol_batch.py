@@ -124,6 +124,98 @@ async def _test_http_jsonrpc_boundaries_and_notifications(monkeypatch):
 def test_http_jsonrpc_boundaries_and_notifications(monkeypatch):
     _run(_test_http_jsonrpc_boundaries_and_notifications(monkeypatch))
 
+async def _test_phase2_http_surface(temp_git_repo, monkeypatch):
+    monkeypatch.delenv("GIT_TELEMETRY_AUTH_TOKEN", raising=False)
+    headers = {"Content-Type": "application/json"}
+    repo_path = str(temp_git_repo)
+
+    response = await _post(
+        json.dumps({"jsonrpc": "2.0", "id": 1, "method": "resources/list"}),
+        headers,
+    )
+    body = _response_json(response)
+    assert response.status_code == 200
+    assert {item["uri"] for item in body["result"]["resources"]} == {
+        "telemetry://session/current",
+        "telemetry://history/standup",
+        "git://delta/latest",
+    }
+
+    response = await _post(
+        json.dumps({"jsonrpc": "2.0", "id": 2, "method": "prompts/list"}),
+        headers,
+    )
+    assert response.status_code == 200
+    assert len(_response_json(response)["result"]["prompts"]) == 3
+
+    response = await _post(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "resources/read",
+                "params": {"uri": "telemetry://session/current", "repo_path": repo_path},
+            }
+        ),
+        headers,
+    )
+    body = _response_json(response)
+    assert response.status_code == 200
+    assert body["result"]["contents"][0]["uri"] == "telemetry://session/current"
+
+    response = await _post(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "prompts/get",
+                "params": {
+                    "name": "handover_notes",
+                    "arguments": {"repo_path": repo_path},
+                },
+            }
+        ),
+        headers,
+    )
+    body = _response_json(response)
+    assert response.status_code == 200
+    assert body["result"]["messages"]
+
+    response = await _post(
+        json.dumps(
+            {"jsonrpc": "2.0", "id": 5, "method": "resources/read", "params": []}
+        ),
+        headers,
+    )
+    assert _response_json(response)["error"]["code"] == -32602
+
+    response = await _post(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 6,
+                "method": "prompts/get",
+                "params": {"name": "handover_notes", "arguments": []},
+            }
+        ),
+        headers,
+    )
+    assert "expected an object" in _response_json(response)["result"]["content"][0]["text"]
+
+    sensitive_uri = "telemetry://unknown?repo_path=%2Fhome%2Fsecret%2Fproject"
+    response = await _post(
+        json.dumps(
+            {"jsonrpc": "2.0", "id": 7, "method": "resources/read", "params": {"uri": sensitive_uri}}
+        ),
+        headers,
+    )
+    result_text = json.dumps(_response_json(response)["result"])
+    assert "/home/secret/project" not in result_text
+
+
+def test_phase2_http_surface(temp_git_repo, monkeypatch):
+    _run(_test_phase2_http_surface(temp_git_repo, monkeypatch))
+
 
 def test_sse_query_session_routes_responses(monkeypatch):
     from git_telemetry_mcp import server

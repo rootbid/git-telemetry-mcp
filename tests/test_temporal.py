@@ -5,10 +5,12 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from git_telemetry_mcp.temporal import (
+    GitTemporalProvider,
     parse_colloquial,
     parse_iso_range,
     parse_ordinal_ref,
     parse_relative_duration,
+    resolve_time_bounds,
     resolve_time_range,
 )
 
@@ -109,11 +111,11 @@ async def test_resolve_colloquial_confidence():
 
 
 @pytest.mark.asyncio
-async def test_resolve_git_native_passthrough():
+async def test_resolve_git_native_is_normalized():
     res = await resolve_time_range("1.hour.ago", now=FIXED_NOW)
-    assert res["resolved_from"] == "git_native"
-    assert res["since"] == "1.hour.ago"
-    assert res["until"] == "now"
+    assert res["resolved_from"] == "git_native_normalized"
+    assert datetime.fromisoformat(res["since"])
+    assert datetime.fromisoformat(res["until"])
 
 
 @pytest.mark.asyncio
@@ -133,6 +135,37 @@ async def test_resolve_ordinal_against_repo(repo_with_history):
     assert res["confidence"] == 0.85
     # 'since' is a concrete reflog timestamp, not the passthrough string.
     assert datetime.fromisoformat(res["since"])
+
+@pytest.mark.asyncio
+async def test_git_provider_indexes_repository_event_stream(repo_with_history):
+    provider = GitTemporalProvider(str(repo_with_history))
+    events = await provider.events()
+    kinds = {event["type"] for event in events}
+
+    assert {"reflog", "commit", "stash", "branch"} <= kinds
+    assert events == await provider.events()
+    assert all(datetime.fromisoformat(event["timestamp"]) for event in events)
+    assert all(event.get("anchor") for event in events)
+
+
+@pytest.mark.asyncio
+async def test_ordinal_resolution_preserves_git_anchor(repo_with_history):
+    result = await resolve_time_range(
+        "2 checkouts ago", repo_path=str(repo_with_history), now=FIXED_NOW
+    )
+    assert result["resolved_from"] == "reflog_ordinal"
+    assert result["anchor"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_time_bounds_normalizes_explicit_iso_endpoint():
+    result = await resolve_time_bounds(
+        "last 45m",
+        "2026-08-07T15:00:00+00:00",
+        now=FIXED_NOW,
+    )
+    assert result["until"] == "2026-08-07T15:00:00+00:00"
+    assert result["until"] != "now"
 
 
 @pytest.mark.asyncio

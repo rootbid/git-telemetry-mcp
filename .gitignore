@@ -19,3 +19,4 @@ wheels/
 *.md
 !README.md
 !HANDBOOK.md
+!CHANGELOG.md
